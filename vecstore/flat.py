@@ -31,5 +31,8 @@ class FlatIndex:
         query = np.asarray(query, dtype=np.float32)
         dists = self._dist(query, self._vectors)
         k = min(k, len(dists))
-        ids = np.argsort(dists)[:k]
+        # argpartition is O(n) vs O(n log n) for a full sort, we only
+        # sort the k winners
+        ids = np.argpartition(dists, k - 1)[:k]
+        ids = ids[np.argsort(dists[ids])]
         return ids, dists[ids]
