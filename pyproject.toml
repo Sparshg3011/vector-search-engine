@@ -1,0 +1,16 @@
+[project]
+name = "vecstore"
+version = "0.1.0"
+description = "Vector search engine with HNSW indexing, built from scratch"
+requires-python = ">=3.10"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["vecstore"]
