@@ -1,7 +1,20 @@
 import math
 import random
 
-from vecstore.hnsw import random_level
+import numpy as np
+import pytest
+
+from vecstore.hnsw import HNSWIndex, random_level
+
+
+rng = np.random.default_rng(3)
+
+
+def build_index(n=100, dim=8, **kwargs):
+    index = HNSWIndex(dim=dim, **kwargs)
+    for v in rng.standard_normal((n, dim)):
+        index.add(v)
+    return index
 
 
 def test_most_nodes_stay_at_level_zero():
@@ -20,3 +33,26 @@ def test_bigger_m_gives_flatter_hierarchy():
     rng = random.Random(1)
     flat = [random_level(1 / math.log(64), rng) for _ in range(5000)]
     assert sum(flat) < sum(tall)
+
+
+def test_every_node_lives_in_layer_zero():
+    index = build_index(n=50)
+    assert len(index) == 50
+    assert set(index._layers[0]) == set(range(50))
+
+
+def test_upper_layers_are_subsets_of_lower_ones():
+    index = build_index(n=300)
+    for l in range(1, len(index._layers)):
+        assert set(index._layers[l]) <= set(index._layers[l - 1])
+
+
+def test_entry_point_sits_on_the_top_layer():
+    index = build_index(n=300)
+    assert index._entry in index._layers[-1]
+
+
+def test_dim_mismatch_raises():
+    index = HNSWIndex(dim=8)
+    with pytest.raises(ValueError):
+        index.add(np.zeros(16))
