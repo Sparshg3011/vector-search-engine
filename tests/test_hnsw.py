@@ -56,3 +56,26 @@ def test_dim_mismatch_raises():
     index = HNSWIndex(dim=8)
     with pytest.raises(ValueError):
         index.add(np.zeros(16))
+
+
+def test_greedy_search_walks_a_chain_toward_the_query():
+    index = HNSWIndex(dim=1)
+    for x in [0.0, 1.0, 2.0, 3.0]:
+        index.add([x])
+    index._layers[0] = {0: [1], 1: [0, 2], 2: [1, 3], 3: [2]}
+    best, dist = index._greedy_search(np.array([2.9], np.float32), start=0, layer=0)
+    assert best == 3
+
+
+def test_greedy_search_stops_at_local_minimum():
+    # A is closer to the query than B, so greedy never crosses B to
+    # reach C — the true nearest. This is the failure mode that ef>1
+    # search exists to fix.
+    index = HNSWIndex(dim=2)
+    index.add([0.0, 0.0])  # A
+    index.add([3.0, 0.0])  # B
+    index.add([0.0, 9.0])  # C
+    index._layers[0] = {0: [1], 1: [0, 2], 2: [1]}
+    query = np.array([0.0, 10.0], np.float32)
+    best, dist = index._greedy_search(query, start=0, layer=0)
+    assert best == 0  # stuck, even though C is far closer

@@ -54,3 +54,21 @@ class HNSWIndex:
         if self._entry is None or level > prev_max:
             self._entry = node
         return node
+
+    def _greedy_search(self, query, start, layer):
+        """Hop to whichever neighbor is closest to the query, repeat
+        until no neighbor improves. Every move strictly shrinks the
+        distance, so this always terminates — but it can stop at a
+        local minimum, which is why search keeps a candidate list at
+        layer 0 instead of relying on this alone."""
+        best = start
+        best_dist = self._dist(query, self._vectors[best : best + 1])[0]
+        while True:
+            neighbors = self._layers[layer][best]
+            if not neighbors:
+                return best, best_dist
+            dists = self._dist(query, self._vectors[neighbors])
+            i = int(np.argmin(dists))
+            if dists[i] >= best_dist:
+                return best, best_dist
+            best, best_dist = neighbors[i], dists[i]
