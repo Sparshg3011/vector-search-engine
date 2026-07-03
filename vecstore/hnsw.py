@@ -1,3 +1,4 @@
+import heapq
 import math
 import random
 
@@ -72,3 +73,31 @@ class HNSWIndex:
             if dists[i] >= best_dist:
                 return best, best_dist
             best, best_dist = neighbors[i], dists[i]
+
+    def _search_layer(self, query, entry, layer, ef):
+        """Best-first search over one layer. Two heaps: candidates to
+        expand (closest first) and the ef best results so far (worst
+        first, so it can be evicted in O(log ef)). Python heaps are
+        min-only, so result distances are negated. Stops once the
+        closest unexpanded candidate is worse than the worst result —
+        expanding it could only add nodes we'd throw away."""
+        d = self._dist(query, self._vectors[entry : entry + 1])[0]
+        candidates = [(d, entry)]
+        results = [(-d, entry)]
+        visited = {entry}
+        while candidates:
+            d, node = heapq.heappop(candidates)
+            if d > -results[0][0]:
+                break
+            fresh = [n for n in self._layers[layer][node] if n not in visited]
+            if not fresh:
+                continue
+            visited.update(fresh)
+            dists = self._dist(query, self._vectors[fresh])
+            for nd, nb in zip(dists, fresh):
+                if len(results) < ef or nd < -results[0][0]:
+                    heapq.heappush(candidates, (nd, nb))
+                    heapq.heappush(results, (-nd, nb))
+                    if len(results) > ef:
+                        heapq.heappop(results)
+        return sorted((-d, n) for d, n in results)
