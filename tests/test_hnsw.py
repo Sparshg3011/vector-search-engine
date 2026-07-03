@@ -4,6 +4,7 @@ import random
 import numpy as np
 import pytest
 
+from vecstore.flat import FlatIndex
 from vecstore.hnsw import HNSWIndex, random_level
 
 
@@ -93,6 +94,38 @@ def test_every_node_is_reachable_from_the_entry_point():
                 seen.add(nb)
                 frontier.append(nb)
     assert len(seen) == len(index)
+
+
+def test_search_on_empty_index():
+    index = HNSWIndex(dim=8)
+    ids, dists = index.search(rng.standard_normal(8), k=5)
+    assert len(ids) == 0
+
+
+def test_search_finds_everything_when_k_equals_n():
+    index = build_index(n=20)
+    ids, dists = index.search(rng.standard_normal(8), k=20, ef=50)
+    assert set(ids) == set(range(20))
+    assert np.all(np.diff(dists) >= 0)
+
+
+def test_recall_at_10_beats_90_percent():
+    dim = 16
+    vectors = rng.standard_normal((500, dim)).astype(np.float32)
+    index = HNSWIndex(dim=dim, seed=0)
+    for v in vectors:
+        index.add(v)
+    flat = FlatIndex(dim=dim)
+    flat.add(vectors)
+
+    hits = 0
+    queries = rng.standard_normal((50, dim)).astype(np.float32)
+    for q in queries:
+        true_ids, _ = flat.search(q, k=10)
+        got_ids, _ = index.search(q, k=10, ef=100)
+        hits += len(set(true_ids) & set(got_ids))
+    recall = hits / (len(queries) * 10)
+    assert recall > 0.9
 
 
 def trap_graph():
