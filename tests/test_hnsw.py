@@ -67,6 +67,34 @@ def test_greedy_search_walks_a_chain_toward_the_query():
     assert best == 3
 
 
+def test_degrees_never_exceed_the_cap():
+    index = build_index(n=300, M=8)
+    for l, layer in enumerate(index._layers):
+        cap = 16 if l == 0 else 8
+        assert all(len(links) <= cap for links in layer.values())
+
+
+def test_links_point_at_real_nodes_in_the_same_layer():
+    index = build_index(n=200)
+    for layer in index._layers:
+        for node, links in layer.items():
+            assert node not in links
+            assert all(nb in layer for nb in links)
+
+
+def test_every_node_is_reachable_from_the_entry_point():
+    index = build_index(n=300)
+    seen = {index._entry}
+    frontier = [index._entry]
+    while frontier:
+        node = frontier.pop()
+        for nb in index._layers[0][node]:
+            if nb not in seen:
+                seen.add(nb)
+                frontier.append(nb)
+    assert len(seen) == len(index)
+
+
 def trap_graph():
     # A is closer to the query than B, so a pure greedy walk never
     # crosses B to reach C, the true nearest
