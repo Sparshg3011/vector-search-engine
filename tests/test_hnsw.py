@@ -67,15 +67,30 @@ def test_greedy_search_walks_a_chain_toward_the_query():
     assert best == 3
 
 
-def test_greedy_search_stops_at_local_minimum():
-    # A is closer to the query than B, so greedy never crosses B to
-    # reach C — the true nearest. This is the failure mode that ef>1
-    # search exists to fix.
+def trap_graph():
+    # A is closer to the query than B, so a pure greedy walk never
+    # crosses B to reach C, the true nearest
     index = HNSWIndex(dim=2)
     index.add([0.0, 0.0])  # A
     index.add([3.0, 0.0])  # B
     index.add([0.0, 9.0])  # C
     index._layers[0] = {0: [1], 1: [0, 2], 2: [1]}
-    query = np.array([0.0, 10.0], np.float32)
+    return index, np.array([0.0, 10.0], np.float32)
+
+
+def test_search_layer_escapes_the_greedy_trap():
+    index, query = trap_graph()
+    found = index._search_layer(query, entry=0, layer=0, ef=3)
+    assert found[0][1] == 2
+
+
+def test_search_layer_with_ef_one_degenerates_to_greedy():
+    index, query = trap_graph()
+    found = index._search_layer(query, entry=0, layer=0, ef=1)
+    assert found[0][1] == 0
+
+
+def test_greedy_search_stops_at_local_minimum():
+    index, query = trap_graph()
     best, dist = index._greedy_search(query, start=0, layer=0)
     assert best == 0  # stuck, even though C is far closer
