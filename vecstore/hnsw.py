@@ -86,6 +86,20 @@ class HNSWIndex:
         keep = np.argsort(dists)[:cap]
         self._layers[layer][node] = [links[i] for i in keep]
 
+    def search(self, query, k=10, ef=50):
+        """Greedy-descend the upper layers, then run one careful
+        ef-wide search on layer 0 and return the k best (ids, dists)."""
+        if self._entry is None:
+            return np.array([], dtype=np.int64), np.array([], dtype=np.float32)
+        query = np.asarray(query, dtype=np.float32)
+        entry = self._entry
+        for l in range(len(self._layers) - 1, 0, -1):
+            entry, _ = self._greedy_search(query, entry, l)
+        found = self._search_layer(query, entry, 0, max(ef, k))[:k]
+        ids = np.array([n for _, n in found], dtype=np.int64)
+        dists = np.array([d for d, _ in found], dtype=np.float32)
+        return ids, dists
+
     def _greedy_search(self, query, start, layer):
         """Hop to whichever neighbor is closest to the query, repeat
         until no neighbor improves. Every move strictly shrinks the
