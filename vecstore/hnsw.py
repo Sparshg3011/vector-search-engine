@@ -62,7 +62,7 @@ class HNSWIndex:
                 entry, _ = self._greedy_search(query, entry, l)
             for l in range(min(level, prev_max), -1, -1):
                 found = self._search_layer(query, entry, l, self.ef_construction)
-                neighbors = [n for _, n in found[: self.M]]
+                neighbors = self._select_neighbors(query, found, self.M)
                 self._layers[l][node] = neighbors
                 # links go both ways, and the receiving node may now
                 # have too many — trim it back
@@ -75,16 +75,34 @@ class HNSWIndex:
             self._entry = node
         return node
 
+    def _select_neighbors(self, query, candidates, M):
+        """Diversity heuristic from the paper. Walk candidates nearest
+        first and keep one only if it's closer to the query than to
+        everyone already kept — i.e. it opens a new direction. A pile
+        of candidates in one cluster collapses to a single link."""
+        chosen = []
+        for d, node in candidates:
+            if len(chosen) == M:
+                break
+            if chosen:
+                to_chosen = self._dist(self._vectors[node], self._vectors[chosen])
+                if to_chosen.min() <= d:
+                    continue
+            chosen.append(node)
+        return chosen
+
     def _prune(self, node, layer):
-        """Cap a node's links, keeping the closest. Layer 0 gets twice
-        the budget — that's where the fine-grained search happens."""
+        """Re-select a node's links when it has too many. Layer 0 gets
+        twice the budget — that's where the fine-grained search happens."""
         cap = 2 * self.M if layer == 0 else self.M
         links = self._layers[layer][node]
         if len(links) <= cap:
             return
         dists = self._dist(self._vectors[node], self._vectors[links])
-        keep = np.argsort(dists)[:cap]
-        self._layers[layer][node] = [links[i] for i in keep]
+        candidates = sorted(zip(dists, links))
+        self._layers[layer][node] = self._select_neighbors(
+            self._vectors[node], candidates, cap
+        )
 
     def search(self, query, k=10, ef=50):
         """Greedy-descend the upper layers, then run one careful
