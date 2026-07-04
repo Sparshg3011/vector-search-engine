@@ -96,6 +96,48 @@ def test_every_node_is_reachable_from_the_entry_point():
     assert len(seen) == len(index)
 
 
+def test_select_neighbors_skips_redundant_directions():
+    index = HNSWIndex(dim=2)
+    index.add([1.0, 0.0])  # A
+    index.add([1.1, 0.1])  # B, nearly on top of A
+    index.add([0.0, 2.0])  # C, a genuinely new direction
+    q = np.zeros(2, dtype=np.float32)
+    dists = index._dist(q, index._vectors)
+    candidates = sorted(zip(dists, range(3)))
+    # B is closer to q than C, but B is redundant with A — C wins
+    assert index._select_neighbors(q, candidates, M=2) == [0, 2]
+
+
+def test_diversity_heuristic_beats_closest_m_on_clusters():
+    class ClosestM(HNSWIndex):
+        def _select_neighbors(self, query, candidates, M):
+            return [n for _, n in candidates[:M]]
+
+    gen = np.random.default_rng(5)
+    centers = gen.uniform(-20, 20, (10, 8))
+    vectors = np.vstack(
+        [c + gen.standard_normal((100, 8)) for c in centers]
+    ).astype(np.float32)
+    queries = np.vstack(
+        [c + gen.standard_normal((5, 8)) for c in centers]
+    ).astype(np.float32)
+    flat = FlatIndex(dim=8)
+    flat.add(vectors)
+
+    def recall_of(cls):
+        index = cls(dim=8, M=6, seed=0)
+        for v in vectors:
+            index.add(v)
+        hits = 0
+        for q in queries:
+            true_ids, _ = flat.search(q, k=10)
+            got_ids, _ = index.search(q, k=10, ef=10)
+            hits += len(set(true_ids) & set(got_ids))
+        return hits / (len(queries) * 10)
+
+    assert recall_of(HNSWIndex) > recall_of(ClosestM) + 0.1
+
+
 def test_search_on_empty_index():
     index = HNSWIndex(dim=8)
     ids, dists = index.search(rng.standard_normal(8), k=5)
