@@ -1,4 +1,5 @@
+from .eval import recall
 from .flat import FlatIndex
 from .hnsw import HNSWIndex
 
-__all__ = ["FlatIndex", "HNSWIndex"]
+__all__ = ["FlatIndex", "HNSWIndex", "recall"]

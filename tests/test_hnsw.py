@@ -4,6 +4,7 @@ import random
 import numpy as np
 import pytest
 
+from vecstore.eval import recall
 from vecstore.flat import FlatIndex
 from vecstore.hnsw import HNSWIndex, random_level
 
@@ -128,12 +129,11 @@ def test_diversity_heuristic_beats_closest_m_on_clusters():
         index = cls(dim=8, M=6, seed=0)
         for v in vectors:
             index.add(v)
-        hits = 0
-        for q in queries:
-            true_ids, _ = flat.search(q, k=10)
-            got_ids, _ = index.search(q, k=10, ef=10)
-            hits += len(set(true_ids) & set(got_ids))
-        return hits / (len(queries) * 10)
+        scores = [
+            recall(flat.search(q, k=10)[0], index.search(q, k=10, ef=10)[0])
+            for q in queries
+        ]
+        return sum(scores) / len(scores)
 
     assert recall_of(HNSWIndex) > recall_of(ClosestM) + 0.1
 
@@ -160,14 +160,12 @@ def test_recall_at_10_beats_90_percent():
     flat = FlatIndex(dim=dim)
     flat.add(vectors)
 
-    hits = 0
     queries = rng.standard_normal((50, dim)).astype(np.float32)
-    for q in queries:
-        true_ids, _ = flat.search(q, k=10)
-        got_ids, _ = index.search(q, k=10, ef=100)
-        hits += len(set(true_ids) & set(got_ids))
-    recall = hits / (len(queries) * 10)
-    assert recall > 0.9
+    scores = [
+        recall(flat.search(q, k=10)[0], index.search(q, k=10, ef=100)[0])
+        for q in queries
+    ]
+    assert sum(scores) / len(scores) > 0.9
 
 
 def trap_graph():
