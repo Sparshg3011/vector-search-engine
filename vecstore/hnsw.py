@@ -29,13 +29,21 @@ class HNSWIndex:
         self._dist = METRICS[metric]
         self._ml = 1.0 / math.log(M)
         self._rng = random.Random(seed)
+        # preallocated buffer, doubled when full — appending with
+        # vstack would copy everything on every single insert
         self._vectors = np.empty((0, dim), dtype=np.float32)
+        self._size = 0
         # one adjacency dict per layer: {node id: [neighbor ids]}
         self._layers = []
         self._entry = None
 
     def __len__(self):
-        return len(self._vectors)
+        return self._size
+
+    @property
+    def vectors(self):
+        """View of the live rows, without the spare buffer capacity."""
+        return self._vectors[: self._size]
 
     def add(self, vector):
         """Insert one vector: zoom down to its level with greedy hops,
@@ -44,8 +52,15 @@ class HNSWIndex:
         vector = np.asarray(vector, dtype=np.float32).reshape(1, -1)
         if vector.shape[1] != self.dim:
             raise ValueError(f"expected dim {self.dim}, got {vector.shape[1]}")
-        node = len(self._vectors)
-        self._vectors = np.vstack([self._vectors, vector])
+        node = self._size
+        if self._size == len(self._vectors):
+            grown = np.empty(
+                (max(64, 2 * len(self._vectors)), self.dim), dtype=np.float32
+            )
+            grown[: self._size] = self._vectors[: self._size]
+            self._vectors = grown
+        self._vectors[node] = vector
+        self._size += 1
 
         level = random_level(self._ml, self._rng)
         prev_entry = self._entry
