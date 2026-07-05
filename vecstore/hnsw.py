@@ -1,4 +1,5 @@
 import heapq
+import json
 import math
 import random
 
@@ -89,6 +90,39 @@ class HNSWIndex:
         if prev_entry is None or level > prev_max:
             self._entry = node
         return node
+
+    def save(self, path):
+        """One .npz file: vectors as a real array, graph and params as
+        json. No pickle — the file stays portable and safe to open."""
+        meta = {
+            "dim": self.dim,
+            "metric": self.metric,
+            "M": self.M,
+            "ef_construction": self.ef_construction,
+            "entry": self._entry,
+            "layers": [
+                {str(n): nbrs for n, nbrs in layer.items()} for layer in self._layers
+            ],
+        }
+        np.savez_compressed(path, vectors=self.vectors, meta=json.dumps(meta))
+
+    @classmethod
+    def load(cls, path):
+        data = np.load(path, allow_pickle=False)
+        meta = json.loads(data["meta"].item())
+        index = cls(
+            dim=meta["dim"],
+            metric=meta["metric"],
+            M=meta["M"],
+            ef_construction=meta["ef_construction"],
+        )
+        index._vectors = data["vectors"].copy()
+        index._size = len(index._vectors)
+        index._entry = meta["entry"]
+        index._layers = [
+            {int(n): nbrs for n, nbrs in layer.items()} for layer in meta["layers"]
+        ]
+        return index
 
     def _select_neighbors(self, query, candidates, M):
         """Diversity heuristic from the paper. Walk candidates nearest
