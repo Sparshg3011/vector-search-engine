@@ -177,6 +177,42 @@ def test_recall_at_10_beats_90_percent():
     assert sum(scores) / len(scores) > 0.9
 
 
+def test_save_load_roundtrip_gives_identical_results(tmp_path):
+    index = build_index(n=200)
+    path = tmp_path / "index.npz"
+    index.save(path)
+    loaded = HNSWIndex.load(path)
+
+    for q in rng.standard_normal((10, 8)).astype(np.float32):
+        ids_a, dists_a = index.search(q, k=10)
+        ids_b, dists_b = loaded.search(q, k=10)
+        assert np.array_equal(ids_a, ids_b)
+        np.testing.assert_array_equal(dists_a, dists_b)
+
+
+def test_loaded_index_accepts_new_inserts(tmp_path):
+    index = build_index(n=100)
+    path = tmp_path / "index.npz"
+    index.save(path)
+    loaded = HNSWIndex.load(path)
+
+    target = np.full(8, 7.0, dtype=np.float32)
+    loaded.add(target)
+    assert len(loaded) == 101
+    ids, _ = loaded.search(target, k=1)
+    assert ids[0] == 100
+
+
+def test_empty_index_roundtrip(tmp_path):
+    index = HNSWIndex(dim=8)
+    path = tmp_path / "index.npz"
+    index.save(path)
+    loaded = HNSWIndex.load(path)
+    ids, _ = loaded.search(rng.standard_normal(8), k=5)
+    assert len(loaded) == 0
+    assert len(ids) == 0
+
+
 def trap_graph():
     # A is closer to the query than B, so a pure greedy walk never
     # crosses B to reach C, the true nearest
