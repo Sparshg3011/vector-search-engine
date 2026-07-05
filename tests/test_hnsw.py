@@ -60,6 +60,15 @@ def test_dim_mismatch_raises():
         index.add(np.zeros(16))
 
 
+def test_buffer_growth_keeps_vectors_intact():
+    vectors = rng.standard_normal((300, 8)).astype(np.float32)
+    index = HNSWIndex(dim=8)
+    for v in vectors:
+        index.add(v)
+    assert len(index) == 300
+    np.testing.assert_array_equal(index.vectors, vectors)
+
+
 def test_greedy_search_walks_a_chain_toward_the_query():
     index = HNSWIndex(dim=1)
     for x in [0.0, 1.0, 2.0, 3.0]:
@@ -103,7 +112,7 @@ def test_select_neighbors_skips_redundant_directions():
     index.add([1.1, 0.1])  # B, nearly on top of A
     index.add([0.0, 2.0])  # C, a genuinely new direction
     q = np.zeros(2, dtype=np.float32)
-    dists = index._dist(q, index._vectors)
+    dists = index._dist(q, index.vectors)
     candidates = sorted(zip(dists, range(3)))
     # B is closer to q than C, but B is redundant with A — C wins
     assert index._select_neighbors(q, candidates, M=2) == [0, 2]
