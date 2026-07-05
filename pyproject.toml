@@ -7,6 +7,7 @@ dependencies = ["numpy"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
+bench = ["faiss-cpu", "h5py", "matplotlib"]
 
 [build-system]
 requires = ["setuptools"]
