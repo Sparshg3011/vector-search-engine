@@ -119,8 +119,9 @@ def plot(out, path):
         xs, ys = zip(*pts)
         ax.plot(xs, ys, marker=marker, label=name)
     ax.axvline(out["flat_ms"], ls="--", c="gray")
-    ax.text(out["flat_ms"], 0.62, f"  exact search ({out['flat_ms']:.1f} ms)",
-            rotation=90, va="bottom", color="gray", fontsize=8)
+    high = max(r["recall"] for r in out["rows"])
+    ax.text(out["flat_ms"] * 0.92, high, f"exact search ({out['flat_ms']:.1f} ms)",
+            rotation=90, va="top", ha="right", color="gray", fontsize=8)
     ax.set_xscale("log")
     ax.set_xlabel("median ms / query (log scale)")
     ax.set_ylabel("recall@10")
