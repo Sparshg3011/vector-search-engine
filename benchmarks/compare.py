@@ -82,6 +82,13 @@ def main():
     _, flat_ms = timed(lambda q: flat.search(q[None], K)[1][0], queries)
     print(f"exact search: {flat_ms:.2f} ms/query")
 
+    # one full untimed pass per index first — on 1M vectors the first
+    # timed config otherwise pays all the page faults
+    theirs.hnsw.efSearch = 50
+    for q in queries:
+        ours.search(q, k=K, ef=50)
+        theirs.search(q[None], K)
+
     rows = []
     for ef in EF_SWEEP:
         results, ms = timed(lambda q: ours.search(q, k=K, ef=ef)[0], queries)
