@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vecstore playground</title>
+<style>
+  :root { --ink: #2c2c2a; --muted: #77756e; --line: #e4e2da; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: var(--ink); background: #faf9f5;
+    max-width: 780px; margin: 0 auto; padding: 24px 16px;
+  }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    font-size: 14px; margin-bottom: 12px;
+  }
+  .controls label { display: flex; align-items: center; gap: 6px; }
+  select, button {
+    font: inherit; padding: 4px 10px; border: 1px solid var(--line);
+    border-radius: 6px; background: #fff; cursor: pointer;
+  }
+  button:hover { border-color: #bbb; }
+  input[type=range] { width: 110px; accent-color: #534ab7; }
+  #efv { min-width: 2ch; font-variant-numeric: tabular-nums; }
+  svg {
+    width: 100%; aspect-ratio: 1; display: block; background: #fff;
+    border: 1px solid var(--line); border-radius: 10px; cursor: crosshair;
+  }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 13px;
+            color: var(--muted); margin-top: 10px; }
+  .legend span::before {
+    content: ""; display: inline-block; width: 14px; height: 3px;
+    border-radius: 2px; margin-right: 5px; vertical-align: middle;
+    background: var(--c);
+  }
+  #status { font-size: 14px; margin-top: 8px; min-height: 20px; }
+</style>
+</head>
+<body>
+<h1>vecstore playground</h1>
+<p class="sub">an HNSW index built from scratch — click the map and watch the
+search descend the layers · <a href="https://github.com/Sparshg3011/vector-search-engine">source</a></p>
+
+<div class="controls">
+  <label>mode
+    <select id="mode">
+      <option value="search">search</option>
+      <option value="insert">insert</option>
+    </select>
+  </label>
+  <label>ef <input type="range" id="ef" min="1" max="60" value="12">
+    <span id="efv">12</span></label>
+  <label>edges
+    <select id="layerview"></select>
+  </label>
+  <button id="reset">reset</button>
+</div>
+
+<svg id="plot" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
+  <g id="edges"></g><g id="anim"></g><g id="nodes"></g><g id="marks"></g>
+</svg>
+
+<div class="legend">
+  <span style="--c:#d97730">hops on layer 2+</span>
+  <span style="--c:#7f77dd">hops on layer 1</span>
+  <span style="--c:#1d9e75">explored on layer 0</span>
+  <span style="--c:#d4537e">top-k found</span>
+</div>
+<p id="status">click anywhere to search the graph</p>
+
+<script>
+const $ = id => document.getElementById(id);
+const svgNS = "http://www.w3.org/2000/svg";
+const layerColor = l => l >= 2 ? "#d97730" : l === 1 ? "#7f77dd" : "#1d9e75";
+let graph = null, timer = null;
+
+const api = (path, body) => fetch(path, body ? {
+  method: "POST",
+  headers: {"Content-Type": "application/json"},
+  body: JSON.stringify(body),
+} : undefined).then(r => r.json());
+
+function el(tag, attrs) {
+  const e = document.createElementNS(svgNS, tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  return e;
+}
+
+function node(id) { return graph.nodes[id]; }
+
+function drawBase() {
+  const view = $("layerview").value;
+  const edges = $("edges"); edges.innerHTML = "";
+  graph.layers.forEach((layer, l) => {
+    if (view !== "all" && Number(view) !== l) return;
+    for (const [a, b] of layer) {
+      edges.append(el("line", {
+        x1: node(a).x, y1: node(a).y, x2: node(b).x, y2: node(b).y,
+        stroke: l === 0 ? "#eceae2" : "#d6d2f0", "stroke-width": l === 0 ? 0.18 : 0.28,
+      }));
+    }
+  });
+  const nodes = $("nodes"); nodes.innerHTML = "";
+  for (const n of graph.nodes) {
+    nodes.append(el("circle", {
+      id: "n" + n.id, cx: n.x, cy: n.y,
+      r: 0.7 + 0.35 * n.level,
+      fill: n.level === 0 ? "#c9c6bd" : n.level === 1 ? "#8f88e0" : "#534ab7",
+    }));
+  }
+  $("anim").innerHTML = ""; $("marks").innerHTML = "";
+}
+
+async function refresh() {
+  graph = await api("/api/graph");
+  const view = $("layerview");
+  const prev = view.value;
+  view.innerHTML = "";
+  const opts = ["all", ...graph.layers.map((_, l) => String(l))];
+  for (const o of opts) view.append(new Option(o === "all" ? "all layers" : "layer " + o, o));
+  view.value = opts.includes(prev) ? prev : "0";
+  drawBase();
+}
+
+function svgPoint(evt) {
+  const svg = $("plot");
+  const p = new DOMPoint(evt.clientX, evt.clientY).matrixTransform(
+    svg.getScreenCTM().inverse());
+  return {x: p.x, y: p.y};
+}
+
+function animate(res, pt) {
+  clearInterval(timer);
+  drawBase();
+  $("marks").append(
+    el("line", {x1: pt.x - 1.2, y1: pt.y - 1.2, x2: pt.x + 1.2, y2: pt.y + 1.2,
+                stroke: "#2c2c2a", "stroke-width": 0.4}),
+    el("line", {x1: pt.x - 1.2, y1: pt.y + 1.2, x2: pt.x + 1.2, y2: pt.y - 1.2,
+                stroke: "#2c2c2a", "stroke-width": 0.4}));
+
+  const steps = [];
+  for (const step of res.trace)
+    for (const [a, b] of step.hops)
+      steps.push({a, b, layer: step.layer});
+
+  let i = 0;
+  timer = setInterval(() => {
+    if (i >= steps.length) {
+      clearInterval(timer);
+      for (const id of res.results)
+        $("marks").append(el("circle", {
+          cx: node(id).x, cy: node(id).y, r: 1.6, fill: "none",
+          stroke: "#d4537e", "stroke-width": 0.35,
+        }));
+      const pct = (100 * res.stats.visited / res.stats.total).toFixed(0);
+      $("status").textContent =
+        `explored ${res.stats.visited} of ${res.stats.total} nodes (${pct}%) — ` +
+        `${res.trace.length} layers, ${steps.length} hops`;
+      return;
+    }
+    const s = steps[i++];
+    $("anim").append(el("line", {
+      x1: node(s.a).x, y1: node(s.a).y, x2: node(s.b).x, y2: node(s.b).y,
+      stroke: layerColor(s.layer), "stroke-width": s.layer > 0 ? 0.5 : 0.25,
+      "stroke-linecap": "round", opacity: s.layer > 0 ? 0.95 : 0.7,
+    }));
+    $("status").textContent = `searching layer ${s.layer}...`;
+  }, 60);
+}
+
+$("plot").addEventListener("click", async evt => {
+  const pt = svgPoint(evt);
+  if ($("mode").value === "search") {
+    const res = await api("/api/search", {...pt, ef: Number($("ef").value), k: 5});
+    animate(res, pt);
+  } else {
+    const added = await api("/api/insert", pt);
+    await refresh();
+    $("status").textContent =
+      `inserted node #${added.id} — the coin flips put it on layer ${added.level}`;
+    $("n" + added.id).setAttribute("stroke", "#d4537e");
+    $("n" + added.id).setAttribute("stroke-width", 0.4);
+  }
+});
+
+$("ef").addEventListener("input", () => $("efv").textContent = $("ef").value);
+$("layerview").addEventListener("change", drawBase);
+$("reset").addEventListener("click", async () => {
+  graph = await api("/api/reset", {n: 150, seed: Date.now() % 100000});
+  await refresh();
+  $("status").textContent = "fresh index, 150 points";
+});
+
+refresh();
+</script>
+</body>
+</html>
