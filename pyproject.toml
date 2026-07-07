@@ -6,8 +6,9 @@ requires-python = ">=3.10"
 dependencies = ["numpy"]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "httpx"]
 bench = ["faiss-cpu", "h5py", "matplotlib"]
+demo = ["fastapi", "uvicorn"]
 
 [build-system]
 requires = ["setuptools"]
