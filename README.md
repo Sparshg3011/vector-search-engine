@@ -48,6 +48,19 @@ algorithm, same parameters, same graph quality. Latency sits 4-6x behind
 FAISS's C++, which is the price of NumPy per graph hop. Build time for 1M
 vectors: 19 min here vs 3 min for FAISS, single-threaded both.
 
+## Playground
+
+A visual demo on a 2-d index: click the map, watch the search hop across the
+top layers and fan out on layer 0, and see how many nodes it explored. There's
+an ef slider, an insert mode, and per-layer edge views.
+
+```
+pip install -e ".[demo]"
+uvicorn playground.server:app
+```
+
+then open http://localhost:8000.
+
 ## Status
 
-Work in progress — web playground and a compact graph layout on the way.
+Work in progress — deployment and a compact graph layout on the way.
