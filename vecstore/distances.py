@@ -3,9 +3,10 @@ import numpy as np
 
 def l2(query, vectors):
     """Squared L2 distance from query to each row. Skips the sqrt since
-    it doesn't change the ranking."""
+    it doesn't change the ranking. Accumulates in float64 so squaring
+    large float32 values can't overflow to inf and collapse the order."""
     diff = vectors - query
-    return np.einsum("ij,ij->i", diff, diff)
+    return np.einsum("ij,ij->i", diff, diff, dtype=np.float64)
 
 
 def inner_product(query, vectors):

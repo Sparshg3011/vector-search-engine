@@ -34,6 +34,16 @@ def test_cosine_ignores_magnitude():
     np.testing.assert_allclose(dists, [0.0, 0.0], atol=1e-6)
 
 
+def test_l2_ranking_survives_large_magnitudes():
+    # squaring these in float32 overflows to inf; the float64 accumulator
+    # keeps the true order (row 1 is nearer the origin)
+    q = np.array([0.0], dtype=np.float32)
+    vs = np.array([[2.5e19], [2.0e19]], dtype=np.float32)
+    dists = l2(q, vs)
+    assert np.isfinite(dists).all()
+    assert dists[1] < dists[0]
+
+
 def test_cosine_orthogonal_and_opposite():
     q = np.array([1.0, 0.0], dtype=np.float32)
     vs = np.array([[0.0, 1.0], [-1.0, 0.0]], dtype=np.float32)
