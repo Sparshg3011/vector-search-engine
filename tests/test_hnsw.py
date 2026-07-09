@@ -60,6 +60,12 @@ def test_dim_mismatch_raises():
         index.add(np.zeros(16))
 
 
+def test_M_below_two_raises():
+    # the level multiplier 1/ln(M) is undefined at M=1
+    with pytest.raises(ValueError):
+        HNSWIndex(dim=8, M=1)
+
+
 def test_buffer_growth_keeps_vectors_intact():
     vectors = rng.standard_normal((300, 8)).astype(np.float32)
     index = HNSWIndex(dim=8)
@@ -211,6 +217,38 @@ def test_empty_index_roundtrip(tmp_path):
     ids, _ = loaded.search(rng.standard_normal(8), k=5)
     assert len(loaded) == 0
     assert len(ids) == 0
+
+
+def test_load_accepts_the_bare_path_save_was_given(tmp_path):
+    # savez appends .npz; load should still find it from the bare path
+    index = build_index(n=50)
+    bare = str(tmp_path / "index")
+    index.save(bare)
+    loaded = HNSWIndex.load(bare)
+    assert len(loaded) == 50
+
+
+def test_extending_a_loaded_index_matches_extending_in_memory(tmp_path):
+    extra = rng.standard_normal((40, 8)).astype(np.float32)
+
+    live = HNSWIndex(dim=8, seed=7)
+    for v in rng.standard_normal((30, 8)):
+        live.add(v)
+    path = tmp_path / "index.npz"
+    live.save(path)
+    loaded = HNSWIndex.load(path)
+
+    for v in extra:
+        live.add(v)
+        loaded.add(v)
+
+    # the restored rng state means both draw the same levels, so the
+    # graphs stay identical and searches agree
+    assert loaded._layers == live._layers
+    for q in rng.standard_normal((10, 8)).astype(np.float32):
+        a, _ = live.search(q, k=5)
+        b, _ = loaded.search(q, k=5)
+        assert list(a) == list(b)
 
 
 def trap_graph():

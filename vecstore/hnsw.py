@@ -1,6 +1,7 @@
 import heapq
 import json
 import math
+import os
 import random
 
 import numpy as np
@@ -23,6 +24,9 @@ class HNSWIndex:
     def __init__(self, dim, metric="l2", M=16, ef_construction=100, seed=0):
         if metric not in METRICS:
             raise ValueError(f"unknown metric: {metric}")
+        if M < 2:
+            # the level multiplier is 1/ln(M), undefined at M=1
+            raise ValueError("M must be >= 2")
         self.dim = dim
         self.metric = metric
         self.M = M
@@ -93,13 +97,17 @@ class HNSWIndex:
 
     def save(self, path):
         """One .npz file: vectors as a real array, graph and params as
-        json. No pickle — the file stays portable and safe to open."""
+        json. No pickle — the file stays portable and safe to open. The
+        rng state rides along so an index that's loaded and extended
+        keeps drawing the same levels it would have in memory."""
+        rng = self._rng.getstate()
         meta = {
             "dim": self.dim,
             "metric": self.metric,
             "M": self.M,
             "ef_construction": self.ef_construction,
             "entry": self._entry,
+            "rng": [rng[0], list(rng[1]), rng[2]],
             "layers": [
                 {str(n): nbrs for n, nbrs in layer.items()} for layer in self._layers
             ],
@@ -108,6 +116,10 @@ class HNSWIndex:
 
     @classmethod
     def load(cls, path):
+        # savez appends .npz; accept the bare path we were saved under
+        path = os.fspath(path)
+        if not os.path.exists(path) and os.path.exists(path + ".npz"):
+            path += ".npz"
         data = np.load(path, allow_pickle=False)
         meta = json.loads(data["meta"].item())
         index = cls(
@@ -122,6 +134,9 @@ class HNSWIndex:
         index._layers = [
             {int(n): nbrs for n, nbrs in layer.items()} for layer in meta["layers"]
         ]
+        rng = meta.get("rng")
+        if rng is not None:
+            index._rng.setstate((rng[0], tuple(rng[1]), rng[2]))
         return index
 
     def _select_neighbors(self, query, candidates, M):
