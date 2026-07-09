@@ -43,11 +43,15 @@ def mean_recall(truth, results):
     return float(np.mean([recall(t[:K], got) for t, got in zip(truth, results)]))
 
 
-def build_ours(train, dim, cache):
+def normalize(x):
+    return x / (np.linalg.norm(x, axis=1, keepdims=True) + 1e-12)
+
+
+def build_ours(train, dim, cache, metric):
     if os.path.exists(cache):
         print(f"loading cached index from {cache}")
         return HNSWIndex.load(cache)
-    index = HNSWIndex(dim=dim, M=M, ef_construction=EF_CONSTRUCTION, seed=0)
+    index = HNSWIndex(dim=dim, metric=metric, M=M, ef_construction=EF_CONSTRUCTION, seed=0)
     t0 = time.perf_counter()
     for i, v in enumerate(train):
         index.add(v)
@@ -69,15 +73,24 @@ def main():
     dim = train.shape[1]
     faiss.omp_set_num_threads(1)
 
-    ours = build_ours(train, dim, os.path.join("data", f"{args.dataset}-vecstore.npz"))
+    # angular datasets rank by cosine — normalize and score by inner
+    # product so recall isn't measured under the wrong metric
+    angular = args.dataset.endswith("angular")
+    if angular:
+        train, queries = normalize(train), normalize(queries)
+    metric = "ip" if angular else "l2"
+    faiss_metric = faiss.METRIC_INNER_PRODUCT if angular else faiss.METRIC_L2
 
-    theirs = faiss.IndexHNSWFlat(dim, M)
+    cache = os.path.join("data", f"{args.dataset}-M{M}-ef{EF_CONSTRUCTION}-{metric}.npz")
+    ours = build_ours(train, dim, cache, metric)
+
+    theirs = faiss.IndexHNSWFlat(dim, M, faiss_metric)
     theirs.hnsw.efConstruction = EF_CONSTRUCTION
     t0 = time.perf_counter()
     theirs.add(train)
     print(f"faiss build: {time.perf_counter() - t0:.0f}s")
 
-    flat = faiss.IndexFlatL2(dim)
+    flat = faiss.IndexFlatIP(dim) if angular else faiss.IndexFlatL2(dim)
     flat.add(train)
     _, flat_ms = timed(lambda q: flat.search(q[None], K)[1][0], queries)
     print(f"exact search: {flat_ms:.2f} ms/query")
