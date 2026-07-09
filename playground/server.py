@@ -2,6 +2,7 @@
 watch the search hop through the layers. One global index, no auth,
 no persistence — it's a playground, not a product."""
 
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,10 @@ from vecstore import HNSWIndex
 from vecstore.trace import traced_search
 
 app = FastAPI(title="vecstore playground")
+
+# endpoints are sync and run in FastAPI's threadpool, so guard the one
+# shared index — an insert must not race a search mid-walk
+_lock = threading.Lock()
 
 
 def fresh_index(n=150, seed=7):
@@ -43,6 +48,8 @@ class ResetReq(BaseModel):
 
 
 def graph_json(index):
+    if index._entry is None:
+        return {"nodes": [], "layers": [], "entry": None}
     top = {}
     for l, layer in enumerate(index._layers):
         for node in layer:
@@ -60,33 +67,38 @@ def graph_json(index):
 
 @app.get("/api/graph")
 def get_graph():
-    return graph_json(state["index"])
+    with _lock:
+        return graph_json(state["index"])
 
 
 @app.post("/api/reset")
 def reset(req: ResetReq):
-    state["index"] = fresh_index(req.n, req.seed)
-    return graph_json(state["index"])
+    with _lock:
+        state["index"] = fresh_index(req.n, req.seed)
+        return graph_json(state["index"])
 
 
 @app.post("/api/insert")
 def insert(p: Point):
-    index = state["index"]
-    node = index.add([p.x, p.y])
-    level = sum(1 for layer in index._layers if node in layer) - 1
+    with _lock:
+        index = state["index"]
+        node = index.add([p.x, p.y])
+        level = sum(1 for layer in index._layers if node in layer) - 1
     return {"id": int(node), "level": int(level)}
 
 
 @app.post("/api/search")
 def search(req: SearchReq):
-    index = state["index"]
-    ids, dists, trace = traced_search(index, [req.x, req.y], k=req.k, ef=req.ef)
+    with _lock:
+        index = state["index"]
+        ids, dists, trace = traced_search(index, [req.x, req.y], k=req.k, ef=req.ef)
+        total = len(index)
     visited = {v for step in trace for v in step["visited"]}
     return {
         "results": ids,
         "distances": dists,
         "trace": trace,
-        "stats": {"visited": len(visited), "total": len(index)},
+        "stats": {"visited": len(visited), "total": total},
     }
 
 

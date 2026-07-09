@@ -156,7 +156,7 @@ function animate(res, pt) {
           cx: node(id).x, cy: node(id).y, r: 1.6, fill: "none",
           stroke: "#d4537e", "stroke-width": 0.35,
         }));
-      const pct = (100 * res.stats.visited / res.stats.total).toFixed(0);
+      const pct = res.stats.total ? (100 * res.stats.visited / res.stats.total).toFixed(0) : 0;
       $("status").textContent =
         `explored ${res.stats.visited} of ${res.stats.total} nodes (${pct}%) — ` +
         `${res.trace.length} layers, ${steps.length} hops`;

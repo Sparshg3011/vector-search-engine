@@ -4,6 +4,7 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
 from playground.server import app, state, fresh_index
+from vecstore import HNSWIndex
 
 
 @pytest.fixture(autouse=True)
@@ -42,3 +43,12 @@ def test_index_page_is_served():
     page = client.get("/")
     assert page.status_code == 200
     assert "playground" in page.text
+
+
+def test_empty_index_does_not_crash():
+    state["index"] = HNSWIndex(dim=2, M=8, seed=7)  # no points added
+    graph = client.get("/api/graph").json()
+    assert graph == {"nodes": [], "layers": [], "entry": None}
+    result = client.post("/api/search", json={"x": 50, "y": 50}).json()
+    assert result["results"] == []
+    assert result["stats"]["total"] == 0
