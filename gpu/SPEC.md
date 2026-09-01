@@ -148,19 +148,41 @@ per query; expansions ≈ ef; candidate pushes ≈ 3×ef. Therefore:
 |---|---|---|
 | hello | numpy add | exact |
 | K1 (both paths) | fp64 numpy on the same fp16-quantized inputs | `rtol=1e-3, atol=1e-2` |
+| K1, SIFT-scale case only | same | `rtol=1e-4` — integers 0..255 are exact in fp16, so that test carries no quantization error to hide behind. A tighter guard on one case, not a renegotiated gate. |
 | K2 | `np.argpartition` on the same fp32 matrix | ids compared as sets; at the k-boundary, ids whose distances differ by ≤1e-3 relative are interchangeable; dists sorted ascending |
 | K3 | vecstore `HNSWIndex.search`, same ef, same normalized data | mean recall@10 over ≥200 queries within **0.01** of CPU at ef ∈ {50, 200}; disagreement beyond that = bug, not "GPU is different" |
+
+Recall for the K3 gate is scored against exact `FlatIndex` neighbors of
+the **exported fp16 rows**, not the fp32 originals — same-data rule.
+(Measured: scoring against fp32 truth moves the CPU number by 0.0005,
+20× inside the gate, so the choice cannot decide a pass.)
+
+Argument validation raises `ValueError` from the binding layer, ahead of
+the device call; the C++ core repeats the checks as a `runtime_error`
+backstop. A state error (`hnsw()` before `set_graph`) is a
+`RuntimeError`. Wrong dtypes are rejected, never force-cast: a silent
+fp64→fp32 downcast of the distance matrix would move the top-k boundary.
 
 ## Benchmark protocol (`bench/run.py`)
 
 - Axes: batch ∈ {1, 32, 128, 512, 2048} (first-class), ef sweep for graph
-  indexes, k=10 default.
+  indexes, `nprobe` sweep for faiss IVF, k=10 default.
 - Baselines (each optional, skipped with a printed notice — no silent
   drops): numpy flat (single thread), vecstore CPU HNSW, gpu flat
   (K1+K2), gpu hnsw (K3), faiss-gpu flat, faiss-gpu IVF, cuVS CAGRA.
 - ≥3 warmup runs, then median of ≥20 timed runs (batch 1: ≥200 queries).
 - Report kernel-ms (CUDA events) and end-to-end wall-ms (incl. H2D/D2H)
-  as separate labeled columns; never blend them.
+  as separate labeled columns; never blend them. `gpu_hnsw`'s host
+  descent counts inside wall time (it is part of the query path) and is
+  also broken out as `extra.descend_ms`, so it can never be read as
+  kernel time.
+- **Every baseline scores under the export's own metric.** On a
+  normalized angular export the faiss baselines must use
+  `IndexFlatIP` / `METRIC_INNER_PRODUCT`; ranking those vectors by L2
+  scores recall under the wrong ordering. Anything a baseline adapts at
+  runtime (the IVF `nlist`, capped when `N < 39·nlist` by faiss's
+  training-point ratio) is recorded in the results json rather than
+  assumed.
 - Log GPU name, driver, and SM clock via nvidia-smi into the results
   json; results land in `bench/results/*.json`, plots via `plot.py`.
 
