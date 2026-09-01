@@ -6,3 +6,9 @@ __pycache__/
 data/
 .claude/
 .DS_Store
+
+# gpu chapter: cmake tree and the built extension. the exported device
+# indexes are large binaries like data/, they get rebuilt by export.py
+gpu/build/
+*.so
+*.gpu.npz

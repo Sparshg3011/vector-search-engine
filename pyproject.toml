@@ -16,3 +16,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["vecstore"]
+
+[tool.pytest.ini_options]
+markers = ["gpu: needs an NVIDIA GPU (skipped otherwise)"]
