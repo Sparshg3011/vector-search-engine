@@ -233,9 +233,6 @@ struct DeviceIndex::Impl {
   // K2, device pointers in and out
   void run_k2(const float* dmat, long long nq, int k, int* out_ids,
               float* out_dists) {
-    // DELETE-TO-ENABLE (K2): drop this throw once topk.cu is real
-    throw std::runtime_error("K2 not implemented - write gpu/kernels/topk.cu");
-
     tic();
     vsg_k2_topk<<<(unsigned)nq, VSG_K2_THREADS>>>(dmat, out_ids, out_dists,
                                                   (int)n, k);
@@ -465,9 +462,6 @@ void topk(const float* dmat, long long nq, long long n, int k, int* out_ids,
                       cudaMemcpyHostToDevice));
   DevBuf dids(sizeof(int) * (size_t)nq * (size_t)k);
   DevBuf ddists(sizeof(float) * (size_t)nq * (size_t)k);
-
-  // DELETE-TO-ENABLE (K2): drop this throw once topk.cu is real
-  throw std::runtime_error("K2 not implemented - write gpu/kernels/topk.cu");
 
   cudaEvent_t start, stop;
   VSG_CUDA(cudaEventCreate(&start));

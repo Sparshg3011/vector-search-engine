@@ -1,62 +1,82 @@
-// K2 - per-row top-k selection. TODO(sparsh): this is yours.
-//
-// CONTRACT:
-//
-//   for each row of dmat (one row = one query's distances to all n
-//   base vectors), write the k smallest values and their column ids,
-//   CLOSEST FIRST:
-//
-//   out_dists[q * k + j] = j-th smallest distance in row q   (ascending)
-//   out_ids  [q * k + j] = its column index
-//
-//   dmat: (nq, n) fp32 row-major, produced by K1 or the cublas path
-//   k:    1 <= k <= VSG_MAX_K (128). The launcher rejects larger.
-//   grid: one block per row (blockIdx.x == the row), so nq blocks.
-//
-// Ties: rows can hold duplicate distances (integer datasets do this a
-// lot). Any consistent choice among equal values is fine - the tests
-// compare ids as sets and treat two ids at the k boundary as
-// interchangeable when their distances agree to 1e-3 relative. What is
-// NOT fine is emitting the same id twice.
-//
-// WHY NOT JUST SORT: n is up to a million per row and k is 10. Sorting
-// costs O(n log n) and touches everything; selection is O(n) with a
-// tiny working set. The usual structure is two phases:
-//
-//   1. each thread scans a strided slice of the row (thread t takes
-//      columns t, t+T, t+2T, ...) keeping its own sorted top-k in
-//      registers. Most values lose to the current worst in a single
-//      compare, so the insertion path is rarely taken.
-//   2. the block merges the T sorted lists into one. A k-round
-//      min-reduction over each thread's next unconsumed candidate is
-//      the simple version; warp shuffles (__shfl_down_sync) make the
-//      reduction cheaper than shared memory.
-//
-// Why the merge is correct: a true top-k element can only be evicted
-// from a thread's local list by k values that also beat it globally,
-// and fewer than k such values exist - so it survives in some list.
-//
-// Watch for: every thread must reach every __syncthreads() (do not
-// return early from a partial block); k rounds of reduction means the
-// scratch arrays are rewritten each round, so sync after reading the
-// winner as well as after writing.
+// K2: k smallest values per row of an (nq, n) fp32 matrix, ascending,
+// with their column ids. One block per row. Each thread keeps a sorted
+// shortlist over a strided slice, then the block merges the shortlists
+// with k rounds of argmin.
 
 #include "config.cuh"
+
+#define K2_THREADS VSG_K2_THREADS
+#define K2_WARPS (VSG_K2_THREADS / 32)
+#define K2_FULL_MASK 0xffffffffu
 
 __global__ void vsg_k2_topk(const float* __restrict__ dmat,
                             int* __restrict__ out_ids,
                             float* __restrict__ out_dists, int n, int k) {
-  // TODO(sparsh): K2 goes here.
-  //
-  // the row this block owns:
-  //   const float* row = dmat + (long long)blockIdx.x * n;
-  // per-thread state:
-  //   float cand_d[VSG_MAX_K]; int cand_i[VSG_MAX_K];  // sorted, INF-filled
-  // build +inf without math.h (nvrtc-safe, and free here):
-  //   const float INF = __int_as_float(0x7f800000);
-  (void)dmat;
-  (void)out_ids;
-  (void)out_dists;
-  (void)n;
-  (void)k;
+  const float INF = __int_as_float(0x7f800000);
+  const int tid = threadIdx.x;
+  const int lane = tid & 31;
+  const int warp = tid >> 5;
+  const float* row = dmat + (long long)blockIdx.x * n;
+
+  __shared__ float warp_best_d[K2_WARPS];
+  __shared__ int warp_best_t[K2_WARPS];
+  __shared__ int round_winner;
+
+  float cand_d[VSG_MAX_K];
+  int cand_i[VSG_MAX_K];
+  for (int j = 0; j < k; j++) {
+    cand_d[j] = INF;
+    cand_i[j] = -1;
+  }
+  for (int i = tid; i < n; i += K2_THREADS) {
+    float d = row[i];
+    if (d < cand_d[k - 1]) {
+      int j = k - 1;
+      while (j > 0 && cand_d[j - 1] > d) {
+        cand_d[j] = cand_d[j - 1];
+        cand_i[j] = cand_i[j - 1];
+        j--;
+      }
+      cand_d[j] = d;
+      cand_i[j] = i;
+    }
+  }
+
+  int cursor = 0;
+  for (int r = 0; r < k; r++) {
+    float v = (cursor < k) ? cand_d[cursor] : INF;
+    int owner = tid;
+    for (int off = 16; off > 0; off >>= 1) {
+      float ov = __shfl_down_sync(K2_FULL_MASK, v, off);
+      int oo = __shfl_down_sync(K2_FULL_MASK, owner, off);
+      if (ov < v) {
+        v = ov;
+        owner = oo;
+      }
+    }
+    if (lane == 0) {
+      warp_best_d[warp] = v;
+      warp_best_t[warp] = owner;
+    }
+    __syncthreads();
+
+    if (tid == 0) {
+      float best = warp_best_d[0];
+      int best_t = warp_best_t[0];
+      for (int w = 1; w < K2_WARPS; w++) {
+        if (warp_best_d[w] < best) {
+          best = warp_best_d[w];
+          best_t = warp_best_t[w];
+        }
+      }
+      out_dists[(long long)blockIdx.x * k + r] = best;
+      round_winner = best_t;
+    }
+    __syncthreads();
+
+    if (tid == round_winner) {
+      out_ids[(long long)blockIdx.x * k + r] = cand_i[cursor];
+      cursor++;
+    }
+  }
 }
