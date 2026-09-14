@@ -5,11 +5,14 @@
 FROM nvidia/cuda:12.4.1-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# python3-dev for pybind11's Python.h. cmake comes from pip, not apt:
+# ubuntu 22.04 ships 3.22 and CMakeLists.txt needs 3.24.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip cmake ninja-build git rsync \
+        python3 python3-pip python3-dev git rsync \
     && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --no-cache-dir numpy pytest matplotlib h5py
+RUN python3 -m pip install --no-cache-dir "cmake>=3.24,<4" ninja \
+        numpy pytest matplotlib h5py
 
 # optional baselines — uncomment to bake them in. the faiss-gpu pip
 # wheel situation is spotty; if faiss-gpu-cu12 fails to resolve, the
