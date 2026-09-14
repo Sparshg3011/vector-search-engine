@@ -41,6 +41,9 @@ gpu/
 │   └── loader.py           # .gpu.npz → GpuIndex namespace + validation
 ├── tests/                  # pytest; conftest.py adds gpu/ to sys.path
 ├── bench/                  # run.py, baselines.py, plot.py, results/
+├── tools/
+│   ├── precheck.py         # pre-pod structural compile against stub cuda headers
+│   └── cudastub/           # permissive stand-ins for cuda_runtime.h, cuda_fp16.h, cublas_v2.h
 ├── setup_pod.sh            # pod bootstrap: deps → build → check_env.py
 ├── check_env.py            # phase-0 gates (see below)
 ├── sync.sh                 # rsync push loop, mac → pod
@@ -119,6 +122,19 @@ deletion:
 ```bash
 grep -n DELETE-TO-ENABLE gpu/src/launchers.cu
 ```
+
+**Before you pay for a compile.** On a machine with no nvcc, check the
+structure first:
+
+```bash
+python3 gpu/tools/precheck.py
+```
+
+It compiles the device side against permissive stub headers with the
+host compiler, catching typos, undeclared names, wrong argument counts
+at kernel launches and unbalanced braces. It does not check cuda
+semantics - nvcc on the pod does. If it rejects code nvcc accepts, widen
+the stub in `tools/cudastub`, never bend the kernel to fit it.
 
 Launch geometry (tile size, threads per block, warps per block, K3's
 dynamic shared-memory size) lives in `kernels/config.cuh` because both
