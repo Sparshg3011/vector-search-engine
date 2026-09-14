@@ -1,14 +1,7 @@
 // Host-side glue for the gpu chapter: allocation, transfers, launch
-// configuration, timing, and the cublas GEMM path for K1. The three
-// hand-written kernels live in ../kernels and are pulled in textually
-// below so the whole device side is one translation unit - no separate
-// device linking to get wrong.
-//
-// The kernel launches for K1/K2/K3 are written out and compiled today,
-// but each is preceded by a throw while its kernel is still a stub.
-// That is on purpose: the compiler checks Sparsh's kernel signatures
-// against these calls from day one, and enabling a kernel is a
-// one-line deletion.
+// configuration, timing, and the cublas GEMM path for K1. The kernels
+// live in ../kernels and are pulled in textually below so the whole
+// device side is one translation unit - no separate device linking.
 
 #include "launchers.h"
 
@@ -191,10 +184,6 @@ struct DeviceIndex::Impl {
 
   // K1 hand path, device pointers in and out
   void run_k1(const __half* queries, long long nq, float* out) {
-    // DELETE-TO-ENABLE (K1): drop this throw once distances.cu is real
-    throw std::runtime_error(
-        "K1 not implemented - write gpu/kernels/distances.cu");
-
     dim3 block(VSG_K1_TILE, VSG_K1_TILE);
     dim3 grid((unsigned)((n + VSG_K1_TILE - 1) / VSG_K1_TILE),
               (unsigned)((nq + VSG_K1_TILE - 1) / VSG_K1_TILE));
@@ -260,8 +249,8 @@ DeviceIndex::DeviceIndex(const uint16_t* vectors, long long n, long long stride,
     : p_(new Impl()) {
   try {
     if (n <= 0) throw std::runtime_error("index needs at least one vector");
-    if (dim <= 0 || stride < dim) {
-      throw std::runtime_error("bad dim/stride");
+    if (dim <= 0 || stride < dim || stride % 8 != 0) {
+      throw std::runtime_error("bad dim/stride: need 0 < dim <= stride, stride % 8 == 0");
     }
     p_->n = n;
     p_->dim = dim;

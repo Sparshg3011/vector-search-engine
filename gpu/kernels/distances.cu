@@ -1,69 +1,67 @@
-// K1 - batched distance matrix. TODO(sparsh): this is yours.
-//
-// CONTRACT (the launcher and the tests hold you to exactly this):
-//
-//   out[q * n + b] = distance(queries[q], base[b])   fp32, row-major
-//
-//   queries: (nq, stride) fp16, row-major, rows 16-byte aligned
-//   base:    (n,  stride) fp16, row-major, same stride
-//   dim:     true dimensionality; columns dim..stride are ZERO on both
-//            sides, so looping to stride instead of dim is safe and
-//            usually faster (no ragged tail).
-//   metric:  VSG_METRIC_L2 -> squared l2, no sqrt (ranking is the same
-//                             and the cpu FlatIndex does the same)
-//            VSG_METRIC_IP -> NEGATED dot product, so lower = closer
-//                             everywhere in this codebase
-//
-// NON-NEGOTIABLE: accumulate in float, never in __half. sift components
-// are 0..255, so a squared-l2 sum reaches ~8.3e6 while fp16 tops out at
-// 65504 - a half accumulator silently becomes inf and the ranking
-// collapses. Load as __half (or __half2), convert, accumulate in fp32.
-//
-// Tolerance you are held to: rtol 1e-3, atol 1e-2 against a fp64 numpy
-// reference computed on the same fp16-quantized inputs.
-//
-// SHAPE OF THE PROBLEM: this is memory-bound (~0.5 flops/byte). Every
-// base row is read by every query, so the win is in reuse, not math.
-// The usual structure is a tiled kernel: one thread per (query, base)
-// pair, each block staging a TILE x TILE chunk of both operands through
-// shared memory so a global value is read once per block instead of
-// once per thread. Watch for: coalescing (consecutive threads should
-// read consecutive addresses), shared-memory bank conflicts (pad the
-// tile row by 1), and keeping the metric branch uniform across the
-// block so it costs nothing.
-//
-// Handle nq and n that are not multiples of your tile: out-of-range
-// threads must still reach every __syncthreads() in the loop, so guard
-// the loads (read zeros) and the store, not the barriers.
+// K1: out[q * n + b] = dist(queries[q], base[b]) for fp16 rows of length
+// stride (pad columns are zero). Squared l2, or negated dot product for
+// ip. Block = 16x16 threads owning a 16x16 patch of out; the dim axis is
+// walked 32 at a time through shared memory.
 
 #include "config.cuh"
 #include <cuda_fp16.h>
+
+#define K1_TILE VSG_K1_TILE
+#define K1_CHUNK (2 * VSG_K1_TILE)
 
 __global__ void vsg_k1_distances(const __half* __restrict__ queries,
                                  const __half* __restrict__ base,
                                  float* __restrict__ out, int nq, int n,
                                  int dim, int stride, int metric) {
-  // TODO(sparsh): K1 goes here.
-  //
-  // suggested skeleton:
-  //   __shared__ float qtile[TILE][TILE + 1];   // +1 dodges bank conflicts
-  //   __shared__ float btile[TILE][TILE + 1];
-  //   int qi = blockIdx.y * TILE + threadIdx.y;
-  //   int bi = blockIdx.x * TILE + threadIdx.x;
-  //   float acc = 0.0f;                          // fp32, always
-  //   for (int d0 = 0; d0 < stride; d0 += TILE) { load; __syncthreads();
-  //                                               accumulate; __syncthreads(); }
-  //   if (qi < nq && bi < n) out[(long long)qi * n + bi] = finish(acc);
-  //
-  // note the (long long) on the output index: nq * n reaches 5e8 with
-  // the launcher's chunking, which still fits in int, but the habit is
-  // free and the next size up is not.
-  (void)queries;
-  (void)base;
-  (void)out;
-  (void)nq;
-  (void)n;
   (void)dim;
-  (void)stride;
-  (void)metric;
+
+  // +1 skews rows across banks; btile[tx][t] is a column walk
+  __shared__ float qtile[K1_TILE][K1_CHUNK + 1];
+  __shared__ float btile[K1_TILE][K1_CHUNK + 1];
+
+  const int tx = threadIdx.x;
+  const int ty = threadIdx.y;
+  const int qi = blockIdx.y * K1_TILE + ty;
+  const int bi = blockIdx.x * K1_TILE + tx;
+  const int brow = blockIdx.x * K1_TILE + ty;
+
+  float acc = 0.0f;
+  for (int d0 = 0; d0 < stride; d0 += K1_CHUNK) {
+    const int d = d0 + 2 * tx;
+    float2 qv = make_float2(0.0f, 0.0f);
+    float2 bv = make_float2(0.0f, 0.0f);
+    if (d < stride) {
+      if (qi < nq) {
+        qv = __half22float2(*reinterpret_cast<const __half2*>(
+            queries + (long long)qi * stride + d));
+      }
+      if (brow < n) {
+        bv = __half22float2(*reinterpret_cast<const __half2*>(
+            base + (long long)brow * stride + d));
+      }
+    }
+    qtile[ty][2 * tx] = qv.x;
+    qtile[ty][2 * tx + 1] = qv.y;
+    btile[ty][2 * tx] = bv.x;
+    btile[ty][2 * tx + 1] = bv.y;
+    __syncthreads();
+
+    int span = stride - d0;
+    if (span > K1_CHUNK) span = K1_CHUNK;
+    if (metric == VSG_METRIC_L2) {
+      for (int t = 0; t < span; t++) {
+        float diff = qtile[ty][t] - btile[tx][t];
+        acc += diff * diff;
+      }
+    } else {
+      for (int t = 0; t < span; t++) {
+        acc += qtile[ty][t] * btile[tx][t];
+      }
+    }
+    __syncthreads();
+  }
+
+  if (qi < nq && bi < n) {
+    out[(long long)qi * n + bi] = (metric == VSG_METRIC_L2) ? acc : -acc;
+  }
 }

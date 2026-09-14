@@ -100,6 +100,11 @@ class PyDeviceIndex {
       throw py::value_error("dim " + std::to_string(dim) +
                             " exceeds the row stride " + std::to_string(stride));
     }
+    if (stride % 8 != 0) {
+      throw py::value_error("row stride " + std::to_string(stride) +
+                            " must be a multiple of 8 fp16 values (16-byte "
+                            "rows, see gpu/SPEC.md)");
+    }
     if (metric != "l2" && metric != "ip") {
       throw py::value_error(
           "unknown gpu metric '" + metric +
