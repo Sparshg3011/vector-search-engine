@@ -76,3 +76,65 @@ fashion-mnist-60k (M=16, layer 0)
   wrong dim) vs a self-computed-GT 768-d embedding set. leaning self-computed
   since `brute_force` gives exact answers anyway, but provenance must be
   stated in the writeup either way.
+
+## 2026-09-13 — kernels written, verified off-gpu
+
+k1, k2 and k3 are in and enabled. nothing has run on a gpu yet. what has
+been checked on the mac:
+
+- structural compile of the whole device side against stub cuda headers
+  (`gpu/tools/precheck.py`): clean. catches typos, arity, braces — not
+  semantics.
+- thread-accurate emulation of each kernel's index math against numpy:
+  - k1: 17 cases across tile boundaries (stride 8, 16, 24, 32, 40, 64,
+    104; nq and n not multiples of 16), both metrics, plus sift-scale
+    integers. all within tolerance, every output cell written.
+  - k2: 408 trials incl. heavy ties, all-identical rows, k=128, n<128.
+    exact match to np.sort, no duplicate ids, ascending.
+  - k3: real 5k-node index (M=16). with the cpu's own fp32 rows and fp64
+    distances the emulation reproduces `HNSWIndex.search`'s result sets
+    on 200/200 queries at ef 50 and ef 200. with fp16 rows and fp32
+    accumulation (what the gpu sees) the recall gap to the cpu is 0.0005
+    at both ef, against the 0.01 gate. visited table checked separately:
+    3700 inserts, a 40-way hash-collision chain, no false hits.
+
+### design decisions
+
+- **k1**: 16x16 output patch per block; the dim axis is walked 32 at a
+  time through `[16][33]` fp32 shared tiles, one `__half2` load per
+  thread per chunk (a warp's 32 lanes fetch two whole 64-byte row
+  chunks). conversion happens on the way into shared memory, so the
+  inner loop never touches a half. `+1` on the tile row so the
+  `btile[tx][t]` column walk is bank-conflict-free.
+- **k2**: per-thread sorted shortlist over a strided slice (coalesced
+  reads), then k rounds of argmin: `__shfl_down_sync` inside each warp,
+  four warp minima merged by thread 0, winner broadcast through shared
+  memory. candidate arrays are indexed by a runtime k, so they live in
+  local memory — the cost is on the rare insert path and the merge only.
+  if ncu shows it mattering, template the kernel on k.
+- **k3**: one warp per query. the visited table is warp-private, so it
+  needs no atomics: 32 slots are probed per step with a ballot, insert
+  goes to the first empty. the beam is one sorted list of ef entries
+  with an expanded flag; expand the first unexpanded entry, stop when
+  none is left. this expands exactly the set the cpu's two-heap loop
+  expands (a candidate the cpu would pop and expand is one still inside
+  its results heap), which is why the emulation reproduces it exactly.
+  neighbor distances are warp-per-distance — 32 lanes split one vector,
+  `__half2` per lane, shfl tree reduce, broadcast. thread-per-neighbor
+  is the planned a/b.
+- **k3 list insert**: `pos` = popcount over a ballot of entries `< d`;
+  the shift of `[pos, size)` up by one goes through per-lane register
+  buffers — read everything, `__syncwarp`, write everything — so no lane
+  overwrites an entry another lane has not read yet. when the list is
+  full the last entry falls off via the `i + 1 < ef` guard.
+  dedup-on-insert stays in even though the exact table makes it
+  unreachable: it is the property that makes the evict-on-collision
+  table variant safe to try.
+
+### open
+
+- nothing has been through nvcc. first pod run: `bash gpu/setup_pod.sh`,
+  then `pytest gpu/tests -v`.
+- first two things to read off ncu: k2 local-memory traffic, and k3
+  occupancy (per-lane shift buffers cost ~24 registers on top of the
+  per-warp shared slice).
