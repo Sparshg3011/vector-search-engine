@@ -134,6 +134,18 @@ class PyDeviceIndex {
     py::ssize_t width = adjacency.shape(1);
     const int32_t* a = adjacency.data();
     const int32_t* d = degrees.data();
+    for (py::ssize_t i = 0; i < n_; i++) {
+      if (d[i] < 0 || d[i] > width) {
+        throw py::value_error("degrees[" + std::to_string(i) + "] = " +
+                              std::to_string(d[i]) + " outside [0, " +
+                              std::to_string(width) + "]");
+      }
+    }
+    if (entry < 0 || entry >= n_) {
+      throw py::value_error("entry " + std::to_string(entry) +
+                            " out of range for " + std::to_string(n_) +
+                            " vectors");
+    }
     py::gil_scoped_release release;
     index_->set_graph(a, d, n_, width, entry);
   }
@@ -215,6 +227,12 @@ class PyDeviceIndex {
                             " results");
     }
     const int32_t* e = entries.data();
+    for (py::ssize_t i = 0; i < nq; i++) {
+      if (e[i] < 0 || e[i] >= n_) {
+        throw py::value_error("entries[" + std::to_string(i) + "] = " +
+                              std::to_string(e[i]) + " is not a node id");
+      }
+    }
     std::vector<py::ssize_t> shape;
     shape.push_back(nq);
     shape.push_back((py::ssize_t)k);

@@ -1,86 +1,59 @@
-// K3 - warp-per-query HNSW beam search on layer 0. TODO(sparsh): this
-// is the main event, and the one an interviewer will read line by line.
-//
-// CONTRACT:
-//
-//   for each query, run the layer-0 best-first search starting from
-//   entries[q] (the host already walked the upper layers), and write
-//   the k nearest, closest first:
-//
-//   out_dists[q * k + j] ascending, out_ids[q * k + j] their node ids
-//
-//   vectors:   (n, stride) fp16 row-major, pad columns zero
-//   adjacency: (n, width) int32, row i holds degrees[i] neighbor ids
-//              then -1 padding. width == 2M (32 for M=16).
-//   entries:   (nq,) int32, one layer-0 start node per query
-//   visited:   (gridQueries, VSG_VISITED_SLOTS) int32 scratch in GLOBAL
-//              memory, pre-filled with VSG_VISITED_EMPTY by the
-//              launcher. Query q owns row q.
-//   ef:        beam width, k <= ef <= VSG_MAX_EF (256)
-//   metric:    VSG_METRIC_L2 / VSG_METRIC_IP, same meaning as K1
-//              (fp32 accumulation, ip negated)
-//
-// THE SHAPE OF THE PARALLELISM (this is the thesis of the project):
-// the walk itself is sequential - step two starts wherever step one
-// landed, and no amount of hardware changes that. So we do not
-// parallelize the walk. We parallelize (a) INSIDE each step: one warp
-// owns one query, and its 32 lanes split the fan-out of computing
-// distances to up to `width` neighbors of `dim` values each; and (b)
-// ACROSS queries: thousands of independent warps, each crawling, which
-// is what keeps the machine busy and hides memory latency. Single-query
-// latency does not improve. Throughput does.
-//
-// Keep the traversal logic WARP-UNIFORM: every lane evaluates the same
-// loop condition and the same branch, then lanes diverge only over
-// data (which neighbor, which dimension). Reduce with __shfl_down_sync
-// / __reduce_min_sync rather than shared memory where you can, and
-// remember every lane must reach __syncwarp() together.
-//
-// THE THREE DATA STRUCTURES (sized from measurement - gpu/notes.md):
-//
-// 1. visited set. Open-addressing hash in GLOBAL memory, one row of
-//    VSG_VISITED_SLOTS (8192) int32 per query, empty == -1. Insert with
-//    a linear probe; the table is a power of two so the probe mask is
-//    (VSG_VISITED_SLOTS - 1). Sized from the real sift-1M numbers: a
-//    query at ef=200 visits ~2800 nodes (p95 3547), NOT the "few
-//    hundred" the first plan assumed - and a full open-addressing table
-//    does not degrade, it spins forever. Global memory rather than
-//    shared because an honest 32 KB per query would leave room for one
-//    or two warps per SM and destroy the occupancy that hides the
-//    latency in the first place.
-//    PLANNED A/B (write this second, measure both): the same table in
-//    SHARED memory at a size that fits, evicting on collision instead
-//    of probing. Forgetting a visit only costs duplicate work, never
-//    correctness - provided the result-list insert below rejects an id
-//    it already holds. That safety property is the whole reason the
-//    variant is allowed.
-//
-// 2. candidate/result list. ONE combined array of length ef in shared
-//    memory: (dist, id, expanded flag), kept sorted by distance. Pop
-//    the closest unexpanded entry, expand it, insert its neighbors,
-//    drop anything past ef. Measurement says expansions per query are
-//    almost exactly ef (203 at ef=200), so one ef-length structure is
-//    the right size and a separate candidate heap buys nothing.
-//    Insertion is warp-cooperative: a shift-insert into a sorted array
-//    that all 32 lanes perform in lockstep beats a clever branchy heap
-//    here, because divergence costs more than the extra compares.
-//
-// 3. the k results are just the first k entries of that array when the
-//    search stops - no separate structure.
-//
-// TERMINATION: stop when the closest unexpanded candidate is farther
-// than the current worst result. Expanding it could only add nodes you
-// would immediately throw away. (This is exactly _search_layer's break
-// condition in vecstore/hnsw.py - read it before you start.)
-//
-// CORRECTNESS GATE: mean recall@10 over >=200 queries must land within
-// 0.01 of the cpu index at the same ef, at ef=50 and ef=200. A
-// structural gap is a bug in this file, not "the gpu is different".
-// Debug ritual when it is wrong: shrink to ~100 nodes and one warp,
-// printf from lane 0, and diff the visit order against the cpu trace.
+// K3: layer-0 HNSW beam search, one warp per query. Entry points come
+// from the host's upper-layer descent. The beam is a sorted list of ef
+// (dist, id, expanded) entries in shared memory; the visited set is a
+// per-query open-addressing table in global memory, owned by one warp,
+// so it needs no atomics. Every branch below is warp-uniform.
 
 #include "config.cuh"
 #include <cuda_fp16.h>
+
+#define K3_FULL_MASK 0xffffffffu
+
+static_assert((1 << VSG_VISITED_BITS) == VSG_VISITED_SLOTS,
+              "VSG_VISITED_BITS must be log2(VSG_VISITED_SLOTS)");
+
+__device__ __forceinline__ float k3_distance(const __half* __restrict__ q,
+                                             const __half* __restrict__ v,
+                                             int stride, int metric,
+                                             int lane) {
+  float acc = 0.0f;
+  for (int d = 2 * lane; d < stride; d += 64) {
+    float2 a = __half22float2(*reinterpret_cast<const __half2*>(q + d));
+    float2 b = __half22float2(*reinterpret_cast<const __half2*>(v + d));
+    if (metric == VSG_METRIC_L2) {
+      float dx = a.x - b.x;
+      float dy = a.y - b.y;
+      acc += dx * dx + dy * dy;
+    } else {
+      acc += a.x * b.x + a.y * b.y;
+    }
+  }
+  for (int off = 16; off > 0; off >>= 1) {
+    acc += __shfl_down_sync(K3_FULL_MASK, acc, off);
+  }
+  acc = __shfl_sync(K3_FULL_MASK, acc, 0);
+  return (metric == VSG_METRIC_L2) ? acc : -acc;
+}
+
+// returns true if node was not yet visited (and marks it). 32 slots are
+// probed per step. a full table reports every node as new; the list's
+// dedup and worst-distance checks keep that safe.
+__device__ __forceinline__ bool k3_visit(int* table, int node, int lane) {
+  unsigned h = ((unsigned)node * 2654435761u) >> (32 - VSG_VISITED_BITS);
+  for (int w = 0; w < VSG_VISITED_SLOTS / 32; w++) {
+    int slot = (int)((h + lane) & (VSG_VISITED_SLOTS - 1));
+    int cur = table[slot];
+    if (__ballot_sync(K3_FULL_MASK, cur == node)) return false;
+    unsigned empty = __ballot_sync(K3_FULL_MASK, cur == VSG_VISITED_EMPTY);
+    if (empty) {
+      if (lane == __ffs(empty) - 1) table[slot] = node;
+      __syncwarp();
+      return true;
+    }
+    h += 32;
+  }
+  return true;
+}
 
 __global__ void vsg_k3_hnsw_search(
     const __half* __restrict__ vectors, const int* __restrict__ adjacency,
@@ -88,30 +61,112 @@ __global__ void vsg_k3_hnsw_search(
     const int* __restrict__ entries, int* __restrict__ visited,
     int* __restrict__ out_ids, float* __restrict__ out_dists, int nq, int n,
     int dim, int stride, int width, int k, int ef, int metric) {
-  // TODO(sparsh): K3 goes here.
-  //
-  // one warp per query:
-  //   int lane = threadIdx.x & 31;
-  //   int warp = (blockIdx.x * blockDim.x + threadIdx.x) >> 5;
-  //   if (warp >= nq) return;              // whole warp leaves together
-  //   int* my_visited = visited + (long long)warp * VSG_VISITED_SLOTS;
-  //
-  // shared per warp (blockDim.x / 32 warps per block):
-  //   extern __shared__ char smem[];       // launcher passes the size
-  (void)vectors;
-  (void)adjacency;
-  (void)degrees;
-  (void)queries;
-  (void)entries;
-  (void)visited;
-  (void)out_ids;
-  (void)out_dists;
-  (void)nq;
   (void)n;
   (void)dim;
-  (void)stride;
-  (void)width;
-  (void)k;
-  (void)ef;
-  (void)metric;
+  const float INF = __int_as_float(0x7f800000);
+  const int lane = threadIdx.x & 31;
+  const int wib = threadIdx.x >> 5;
+  const int q = blockIdx.x * VSG_K3_WARPS_PER_BLOCK + wib;
+  if (q >= nq) return;
+
+  extern __shared__ __align__(16) unsigned char k3_smem[];
+  unsigned char* mine = k3_smem + (size_t)wib * VSG_K3_SMEM_PER_WARP(ef);
+  float* cd = reinterpret_cast<float*>(mine);
+  int* ci = reinterpret_cast<int*>(mine + (size_t)ef * sizeof(float));
+  int* cf = reinterpret_cast<int*>(mine + (size_t)ef * (sizeof(float) + sizeof(int)));
+
+  int* table = visited + (long long)q * VSG_VISITED_SLOTS;
+  const __half* qv = queries + (long long)q * stride;
+
+  const int entry = entries[q];
+  k3_visit(table, entry, lane);
+  const float d_entry =
+      k3_distance(qv, vectors + (long long)entry * stride, stride, metric, lane);
+  if (lane == 0) {
+    cd[0] = d_entry;
+    ci[0] = entry;
+    cf[0] = 0;
+  }
+  __syncwarp();
+  int size = 1;
+
+  for (;;) {
+    const int live_chunks = (size + 31) >> 5;
+    // the list is sorted, so the first unexpanded entry is the closest
+    int idx = -1;
+    for (int c = 0; c < live_chunks; c++) {
+      int i = c * 32 + lane;
+      unsigned m = __ballot_sync(K3_FULL_MASK, i < size && cf[i] == 0);
+      if (m) {
+        idx = c * 32 + __ffs(m) - 1;
+        break;
+      }
+    }
+    if (idx < 0) break;
+    if (lane == 0) cf[idx] = 1;
+    __syncwarp();
+
+    const int node = ci[idx];
+    const int deg = degrees[node];
+    const int* nbrs = adjacency + (long long)node * width;
+
+    for (int j = 0; j < deg; j++) {
+      const int nb = nbrs[j];
+      if (!k3_visit(table, nb, lane)) continue;
+      const float d =
+          k3_distance(qv, vectors + (long long)nb * stride, stride, metric, lane);
+      if (size == ef && d >= cd[ef - 1]) continue;
+
+      int pos = 0;
+      unsigned dup = 0;
+      for (int c = 0; c < live_chunks; c++) {
+        int i = c * 32 + lane;
+        bool live = i < size;
+        pos += __popc(__ballot_sync(K3_FULL_MASK, live && cd[i] < d));
+        dup |= __ballot_sync(K3_FULL_MASK, live && ci[i] == nb);
+      }
+      // only reachable once the visited table is allowed to forget
+      if (dup) continue;
+
+      float sd[VSG_K3_CHUNKS];
+      int si[VSG_K3_CHUNKS];
+      int sf[VSG_K3_CHUNKS];
+#pragma unroll
+      for (int c = 0; c < VSG_K3_CHUNKS; c++) {
+        int i = pos + c * 32 + lane;
+        if (i < size) {
+          sd[c] = cd[i];
+          si[c] = ci[i];
+          sf[c] = cf[i];
+        }
+      }
+      __syncwarp();
+#pragma unroll
+      for (int c = 0; c < VSG_K3_CHUNKS; c++) {
+        int i = pos + c * 32 + lane;
+        if (i < size && i + 1 < ef) {
+          cd[i + 1] = sd[c];
+          ci[i + 1] = si[c];
+          cf[i + 1] = sf[c];
+        }
+      }
+      __syncwarp();
+      if (lane == 0) {
+        cd[pos] = d;
+        ci[pos] = nb;
+        cf[pos] = 0;
+      }
+      __syncwarp();
+      if (size < ef) size++;
+    }
+  }
+
+  for (int c = 0; c < (VSG_MAX_K + 31) / 32; c++) {
+    int i = c * 32 + lane;
+    if (i < k) {
+      bool have = i < size;
+      out_ids[(long long)q * k + i] = have ? ci[i] : -1;
+      out_dists[(long long)q * k + i] = have ? cd[i] : INF;
+    }
+  }
 }

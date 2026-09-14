@@ -21,6 +21,8 @@
 #define __restrict__
 #define __shared__
 #define __forceinline__ inline
+#define __align__(n) __attribute__((aligned(n)))
+#define __launch_bounds__(...)
 #define __noinline__
 
 namespace vsg_stub {

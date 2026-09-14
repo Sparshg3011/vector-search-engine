@@ -1,23 +1,18 @@
 # GPU chapter — build contract (v1)
 
-The CUDA port of vecstore, per the master plan: layer-0 search on GPU, fp16
-storage / fp32 accumulation, warp-per-query HNSW beam search, benchmarked
-against FAISS-GPU and cuVS/CAGRA. This file is the contract between the
-scaffold (glue, tests, benchmarks — Claude) and the kernels (Sparsh). When
+The CUDA port of vecstore: layer-0 search on GPU, fp16 storage / fp32
+accumulation, warp-per-query HNSW beam search, benchmarked against
+FAISS-GPU and cuVS/CAGRA. This file is the contract between the glue, the
+tests and the benchmarks on one side and the kernels on the other. When
 code and this spec disagree, fix one of them in the same commit.
 
-## Authorship map
+## Kernels
 
-**Sparsh writes** (interview-probed core, marked `TODO(sparsh)`):
-- `kernels/distances.cu` — K1 hand-rolled tiled distance kernel
-- `kernels/topk.cu` — K2 top-k selection
-- `kernels/hnsw_search.cu` — K3 warp-per-query beam search + its
-  shared/global-memory data structures
-
-**Claude writes** (scaffold; reviewed, never counted as the "hard part"):
-CMake + pybind11 glue, host-side launchers, the cuBLAS GEMM path for K1,
-`hello.cu`, serialization, NumPy reference tests, benchmark runner + plots,
-pod scripts, docs skeletons.
+- `kernels/distances.cu` — K1, tiled distance matrix. `launchers.cu` also
+  carries a cuBLAS GEMM path for the same contract, kept for comparison.
+- `kernels/topk.cu` — K2, per-row top-k selection.
+- `kernels/hnsw_search.cu` — K3, warp-per-query beam search: a
+  global-memory visited table and a shared-memory candidate list.
 
 ## Directory layout
 
@@ -28,9 +23,9 @@ gpu/
 ├── kernels/
 │   ├── config.cuh          # constants + launch geometry shared with the host
 │   ├── hello.cu            # toolchain check: vector add (complete)
-│   ├── distances.cu        # K1  (stub → sparsh)
-│   ├── topk.cu             # K2  (stub → sparsh)
-│   └── hnsw_search.cu      # K3  (stub → sparsh)
+│   ├── distances.cu        # K1  tiled distance matrix
+│   ├── topk.cu             # K2  per-row top-k
+│   └── hnsw_search.cu      # K3  warp-per-query beam search
 ├── src/
 │   ├── launchers.h         # host API, deliberately cuda-free
 │   ├── launchers.cu        # host wrappers; #includes ../kernels/*.cu (one TU)
@@ -108,20 +103,6 @@ record kernel-only time via CUDA events.
   - `.last_kernel_ms() -> float` — CUDA-event time of the previous call
     (kernel(s) only, no H2D/D2H). Benchmarks report this *and* wall time,
     separately labeled.
-- Stub behavior until kernels exist: launchers throw
-  `std::runtime_error("K<n> not implemented - write gpu/kernels/<file>.cu")`.
-  Tests then fail loudly on the pod (that's the todo list) and skip on
-  machines without the extension.
-
-**Enabling a kernel.** Each stub launcher throws on a line tagged
-`DELETE-TO-ENABLE (K<n>)`; the real launch sits directly below it,
-already compiled and wired to the kernel signature. So the compiler
-checks your signature from day one, and turning a kernel on is one
-deletion:
-
-```bash
-grep -n DELETE-TO-ENABLE gpu/src/launchers.cu
-```
 
 **Before you pay for a compile.** On a machine with no nvcc, check the
 structure first:

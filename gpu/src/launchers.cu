@@ -410,10 +410,6 @@ void DeviceIndex::hnsw(const uint16_t* queries, long long nq, const int* entries
   DevBuf visited(vbytes);
   VSG_CUDA(cudaMemset(visited.ptr, 0xFF, vbytes));
 
-  // DELETE-TO-ENABLE (K3): drop this throw once hnsw_search.cu is real
-  throw std::runtime_error(
-      "K3 not implemented - write gpu/kernels/hnsw_search.cu");
-
   int threads = VSG_K3_WARPS_PER_BLOCK * 32;
   long long blocks = (nq + VSG_K3_WARPS_PER_BLOCK - 1) / VSG_K3_WARPS_PER_BLOCK;
   int smem = VSG_K3_SMEM_PER_WARP(ef) * VSG_K3_WARPS_PER_BLOCK;

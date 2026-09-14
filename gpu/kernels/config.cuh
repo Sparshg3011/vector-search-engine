@@ -18,6 +18,8 @@
 // power-of-two mask; an open-addressing table that fills up spins
 // forever looking for a free slot, so the headroom is not optional.
 #define VSG_VISITED_SLOTS 8192
+// log2 of the above: the hash keeps this many high bits of the mixed key
+#define VSG_VISITED_BITS 13
 
 // k3: an empty visited slot. Node ids are non-negative.
 #define VSG_VISITED_EMPTY -1
@@ -40,7 +42,11 @@
 // k3: warps per block; blockDim.x is this times 32.
 #define VSG_K3_WARPS_PER_BLOCK 4
 
-// k3: dynamic shared memory per warp. Assumes the candidate list is ef
-// entries of (float dist, int id, int expanded). Change this if the
-// layout changes.
+// k3: dynamic shared memory per warp. The candidate list is three
+// parallel arrays of ef entries: float dist, int id, int expanded-flag,
+// in that order. Change this if the layout changes.
 #define VSG_K3_SMEM_PER_WARP(ef) ((int)((ef) * (2 * sizeof(int) + sizeof(float))))
+
+// k3: the list is scanned 32 entries per warp step, so this many steps
+// cover MAX_EF. Sizes the per-lane shift buffers.
+#define VSG_K3_CHUNKS (VSG_MAX_EF / 32)
