@@ -28,16 +28,21 @@ endif()
 
 find_package(CUDAToolkit REQUIRED)
 
-# pybind11 is fetched rather than vendored so a fresh pod needs no extra
-# install step. If the pod has no network, drop in a checkout and swap
-# this for find_package(pybind11 REQUIRED).
-include(FetchContent)
-FetchContent_Declare(
-  pybind11
-  GIT_REPOSITORY https://github.com/pybind/pybind11.git
-  GIT_TAG v2.13.6
-)
-FetchContent_MakeAvailable(pybind11)
+# An installed pybind11 wins, so the build needs no network - cluster
+# compute nodes are often offline. Point at a pip install with
+# -Dpybind11_DIR=$(python3 -m pybind11 --cmakedir); otherwise fetch it.
+find_package(pybind11 CONFIG QUIET)
+if(pybind11_FOUND)
+  message(STATUS "pybind11 ${pybind11_VERSION} from ${pybind11_DIR}")
+else()
+  include(FetchContent)
+  FetchContent_Declare(
+    pybind11
+    GIT_REPOSITORY https://github.com/pybind/pybind11.git
+    GIT_TAG v2.13.6
+  )
+  FetchContent_MakeAvailable(pybind11)
+endif()
 
 pybind11_add_module(_vecstore_gpu
   src/bindings.cpp
