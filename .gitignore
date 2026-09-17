@@ -12,3 +12,6 @@ data/
 gpu/build/
 *.so
 *.gpu.npz
+
+# slurm job logs
+slurm-*.out

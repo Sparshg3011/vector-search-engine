@@ -35,11 +35,13 @@ gpu/
 │   ├── export.py           # HNSWIndex .npz → .gpu.npz (runs anywhere)
 │   └── loader.py           # .gpu.npz → GpuIndex namespace + validation
 ├── tests/                  # pytest; conftest.py adds gpu/ to sys.path
-├── bench/                  # run.py, baselines.py, plot.py, results/
+├── bench/                  # run.py, baselines.py, plot.py, fetch_queries.py, results/
 ├── tools/
 │   ├── precheck.py         # pre-pod structural compile against stub cuda headers
 │   └── cudastub/           # permissive stand-ins for cuda_runtime.h, cuda_fp16.h, cublas_v2.h
-├── setup_pod.sh            # pod bootstrap: deps → build → check_env.py
+├── slurm/
+│   └── discovery.sbatch    # build + test + benchmark job for USC Discovery
+├── setup_pod.sh            # deps → build → check_env.py (--deps-only / --build-only)
 ├── check_env.py            # phase-0 gates (see below)
 ├── sync.sh                 # rsync push loop, mac → pod
 ├── Dockerfile              # pinned alternative to setup_pod.sh
@@ -192,6 +194,66 @@ means switch instance/provider or add `--privileged`); 6.
 `compute-sanitizer` runs clean on hello. Print a PASS/FAIL table; nonzero
 exit on any failure. Gate 5 failing is a *provider* problem, not a code
 problem — do not start renting by the hour until 5 passes.
+
+Gate 5 reads the driver's `RmProfilingAdminOnly` from
+`/proc/driver/nvidia/params` first: `1` without root means counters are
+blocked, and the gate says so without spending minutes proving it.
+`--profiler-optional` (forwarded by `setup_pod.sh`) reports gate 5 as
+WARN instead of FAIL, for clusters where counters may be unavailable but
+tests and benchmarks should still run.
+
+## Running on a Slurm cluster (USC Discovery)
+
+Discovery's compute nodes have no internet, so everything that downloads
+runs on a login node and the gpu job only builds, tests and benchmarks.
+Access needs a CARC project account — `myaccount` lists yours and gives
+the `<project_id>` used below.
+
+Once, on a login node (`ssh <netid>@discovery.usc.edu`; USC VPN when off
+campus):
+
+```bash
+module purge
+module load gcc/13.3.0 cuda/12.6.3 python/3.11.9
+python3 -m venv ~/venvs/vecstore
+source ~/venvs/vecstore/bin/activate
+git clone https://github.com/Sparshg3011/vector-search-engine.git
+cd vector-search-engine
+bash gpu/setup_pod.sh --deps-only
+python3 gpu/bench/fetch_queries.py sift-128-euclidean
+```
+
+From your own machine, upload the exported index (the transfer nodes are
+the fast path for large files):
+
+```bash
+scp data/sift.gpu.npz data/sift-128-euclidean-vecstore.npz \
+    <netid>@hpc-transfer1.usc.edu:~/vector-search-engine/data/
+```
+
+Then, from the repo root on a login node:
+
+```bash
+sbatch --account=<project_id> gpu/slurm/discovery.sbatch
+squeue -u $USER
+tail -f slurm-vecstore-gpu-<jobid>.out
+```
+
+The job loads the same modules, activates the venv, runs
+`setup_pod.sh --build-only --profiler-optional`, the gpu tests, and the
+SIFT benchmark into `gpu/bench/results/discovery-<jobid>.json` with its
+plots. It asks for one L40S; command-line flags override the script, so
+`--gpus-per-task=a100:1` or `--gpus-per-task=a40:1` work too, and the
+build targets whichever card the job lands on. For a quick build-and-test
+loop on the short-wait debug partition (A40, 1 hour max):
+
+```bash
+BENCH=0 sbatch --account=<project_id> --partition=debug \
+    --gpus-per-task=a40:1 --time=00:45:00 gpu/slurm/discovery.sbatch
+```
+
+Load the modules again in every new login session before activating the
+venv; its python is the module's.
 
 ## Conventions
 
