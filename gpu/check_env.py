@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """phase-0 gates for the gpu chapter, run by setup_pod.sh after the
 build. nonzero exit on any FAIL. gate 5 failing is a provider problem,
-not a code problem — do not start paid kernel work until it passes."""
+not a code problem — on a rental, do not start paid work until it passes.
+pass --profiler-optional where counters may legitimately be unavailable
+(a cluster without root) to report gate 5 as WARN instead."""
 
+import argparse
+import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -24,9 +29,48 @@ PROBE = (
 ) % GPU_DIR
 
 
+PROFILER_OPTIONAL = False
+
+
 def run(cmd, timeout):
     # missing binaries surface as FileNotFoundError, handled per gate
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def cuda_roots():
+    roots = [os.environ[v] for v in ("CUDA_HOME", "CUDA_PATH", "CUDA_ROOT") if os.environ.get(v)]
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        roots.append(os.path.dirname(os.path.dirname(os.path.realpath(nvcc))))
+    return roots
+
+
+def find_tool(name, toolkit_patterns):
+    """PATH first, then inside the cuda toolkit. cluster cuda modules put
+    nvcc on PATH but often not the nsight tools that ship beside it."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for root in cuda_roots():
+        for pattern in toolkit_patterns:
+            hits = sorted(glob.glob(os.path.join(root, pattern)))
+            if hits:
+                return hits[-1]
+    return None
+
+
+def profiling_admin_only(params="/proc/driver/nvidia/params"):
+    """True when the driver restricts gpu performance counters to admins
+    (RmProfilingAdminOnly: 1), False when it does not, None when the
+    driver does not say."""
+    try:
+        with open(params) as f:
+            for line in f:
+                if line.startswith("RmProfilingAdminOnly:"):
+                    return line.split(":", 1)[1].strip() == "1"
+    except OSError:
+        return None
+    return None
 
 
 def gate_nvidia_smi():
@@ -93,8 +137,21 @@ def gate_hello():
 
 
 def gate_ncu():
+    blocked = "WARN" if PROFILER_OPTIONAL else "FAIL"
+    ncu = find_tool("ncu", ["nsight-compute-*/ncu"]) or next(
+        iter(sorted(glob.glob("/opt/nvidia/nsight-compute/*/ncu"))), None
+    )
+    if ncu is None:
+        return "WARN", "ncu not found on PATH or in the cuda toolkit — install nsight-compute to profile"
+    if profiling_admin_only() and os.geteuid() != 0:
+        # known answer, no need to spend minutes proving it
+        return blocked, (
+            "driver restricts counters to admins (RmProfilingAdminOnly=1) and "
+            "this is not root — on a cluster ask the admins about "
+            "NVreg_RestrictProfilingToAdminUsers=0; on a rental use a root pod"
+        )
     cmd = [
-        "ncu",
+        ncu,
         "--metrics",
         "sm__cycles_elapsed.sum",
         "--target-processes",
@@ -106,31 +163,33 @@ def gate_ncu():
     try:
         proc = run(cmd, timeout=300)
     except FileNotFoundError:
-        return "WARN", "ncu not found — install the nsight-compute package to profile"
+        return "WARN", "ncu found at %s but could not be executed" % ncu
     except subprocess.TimeoutExpired:
-        return "FAIL", "ncu timed out after 300s — retry once, then suspect the pod"
+        return blocked, "ncu timed out after 300s — retry once, then suspect the node"
     out = proc.stdout + proc.stderr
     if "ERR_NVGPUCTRPERM" in out:
-        return "FAIL", (
-            "counters blocked (ERR_NVGPUCTRPERM) — provider problem: needs a "
-            "privileged container, a different provider, or a full VM; do NOT "
-            "start paid kernel work until this passes"
+        return blocked, (
+            "counters blocked (ERR_NVGPUCTRPERM) — needs a privileged "
+            "container, a different provider, or a full VM"
         )
     if proc.returncode != 0:
-        return "FAIL", "ncu exited %d" % proc.returncode
+        return blocked, "ncu exited %d" % proc.returncode
     if "sm__cycles_elapsed.sum" not in out:
-        return "FAIL", "ncu ran but collected no counters"
-    return "PASS", "counter collection works"
+        return blocked, "ncu ran but collected no counters"
+    return "PASS", "counter collection works (%s)" % ncu
 
 
 def gate_sanitizer():
     # --error-exitcode makes detected errors visible in the return code;
     # by default the sanitizer passes the app's exit code through
-    cmd = ["compute-sanitizer", "--error-exitcode", "9", sys.executable, "-c", PROBE]
+    sanitizer = find_tool("compute-sanitizer", ["bin/compute-sanitizer", "compute-sanitizer/compute-sanitizer"])
+    if sanitizer is None:
+        return "WARN", "compute-sanitizer not found — part of the cuda toolkit"
+    cmd = [sanitizer, "--error-exitcode", "9", sys.executable, "-c", PROBE]
     try:
         proc = run(cmd, timeout=300)
     except FileNotFoundError:
-        return "WARN", "compute-sanitizer not found — part of the cuda toolkit"
+        return "WARN", "compute-sanitizer found at %s but could not be executed" % sanitizer
     except subprocess.TimeoutExpired:
         return "FAIL", "compute-sanitizer timed out after 300s"
     out = proc.stdout + proc.stderr
@@ -150,7 +209,15 @@ GATES = [
 ]
 
 
-def main():
+def main(argv=None):
+    global PROFILER_OPTIONAL
+    parser = argparse.ArgumentParser(description="phase-0 gates for the gpu chapter")
+    parser.add_argument(
+        "--profiler-optional",
+        action="store_true",
+        help="report a blocked or failing profiler (gate 5) as WARN, not FAIL",
+    )
+    PROFILER_OPTIONAL = parser.parse_args(argv).profiler_optional
     width = max(len(name) for name, _ in GATES)
     print("phase-0 gates")
     failed = False
@@ -171,7 +238,7 @@ def main():
             failed = True
         print("  %-*s  %-4s  %s" % (width, name, status, detail), flush=True)
     if failed:
-        print("\nFAIL — fix the gates above before starting paid kernel work")
+        print("\nFAIL — fix the gates above before benchmarking")
         return 1
     print("\nall gates passed (WARNs are non-blocking)")
     return 0
