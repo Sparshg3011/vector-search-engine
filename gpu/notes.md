@@ -138,3 +138,59 @@ been checked on the mac:
 - first two things to read off ncu: k2 local-memory traffic, and k3
   occupancy (per-lane shift buffers cost ~24 registers on top of the
   per-warp shared slice).
+
+## 2026-09-17 — first gpu runs, USC Discovery
+
+first compile through nvcc 12.6 (gcc 13.3) was clean. all 76 tests pass on
+an A40 and an L40S; all six phase-0 gates pass, including ncu counter
+access, so the profiling half of the plan works on carc without root.
+
+### sift-1M on one L40S (job 12146981, commit 04a1ff6 + b079dea)
+
+```
+method                         batch   recall@10   ms/q wall   ms/q kernel      qps
+cpu hnsw (numpy), ef=200           1       0.995      2.975           -           336
+cpu hnsw (numpy), ef=50            1       0.938      0.878           -         1,138
+gpu hnsw (k3), ef=200              1       0.995      2.743        2.567          365
+gpu hnsw (k3), ef=200           2048       0.991      0.112        0.0025       8,958
+gpu hnsw (k3), ef=50            2048       0.932      0.110        0.0009       9,095
+gpu flat, k1 + k2               2048       0.999      0.062        0.0596      16,129
+gpu flat, cublas + k2           2048       0.999      0.031        0.0286      32,162
+```
+
+- **batch 1: gpu ≈ cpu** (2.74 vs 2.98 ms at ef=200). the thesis, measured.
+- **batch 2048: k3's kernel is 0.0025 ms/query, but wall is 0.112** — the
+  host `descend()` (a python loop over the upper layers) is ~97% of it.
+  next fix is on the host, not the gpu: vectorize the descent across the
+  batch, or move it onto the device.
+- **batched brute force beats cpu hnsw outright**: cublas + k2 is 96x the
+  cpu's qps at ef=200, at 0.999 recall. hand-written k1 is ~2x slower than
+  the cublas path — first thing to take into ncu.
+- **k3 recall matches the cpu on the full query set**: replayed the cpu
+  search over all 10,000 queries and scored it on exactly the query sets
+  each batch size used; |gpu - cpu| <= 0.0005 everywhere (gate: 0.01). the
+  apparent recall drop from batch 1 to 2048 is the query subset, not the
+  batching — batch 1 scores queries 3..202, batch 2048 all 10,000.
+- **brute force recall is 0.999, not 1.0, because of ties**: sift
+  distances are exact integers (fp16 holds 0..255 exactly, sums stay under
+  2^24), and in 137 of 10,000 queries the 10th and 11th neighbors tie. a
+  differently broken tie scores as a miss: at most 0.0014 of recall.
+
+### what the checks caught
+
+- **racecheck, k3**: write-after-read on the expanded flags — every lane
+  reads them inside the ballot that picks the next node, lane 0 then marks
+  it. `__ballot_sync` orders execution, not memory. harmless in practice
+  (tests and recall unaffected); fixed with a `__syncwarp` (2278cb9).
+  re-check on the fixed build (job 12147440): memcheck 0 errors,
+  racecheck 0 hazards, all three kernels.
+- **cpu index bug, surfaced by the gpu run**: 8 of 10,000 queries return
+  fewer than k results (two return 2). their layer-0 entry points are
+  exact duplicate vectors — sift has 29,076 rows with an exact twin.
+  `_select_neighbors` rejects a candidate when a chosen neighbor is `<=`
+  as close; after the twin is chosen at distance 0 every other candidate
+  ties and is rejected, so twins link only to each other: a closed
+  2-node island. hnswlib and faiss both use strict `<`. not fixed yet — it
+  changes the cpu graph, so it means a rebuild and re-measuring the cpu
+  chapter's published numbers. the benchmark now pads short results with
+  -1 (5e5db24) so the cpu baseline runs at every batch size.
