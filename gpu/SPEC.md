@@ -40,7 +40,8 @@ gpu/
 │   ├── precheck.py         # pre-pod structural compile against stub cuda headers
 │   └── cudastub/           # permissive stand-ins for cuda_runtime.h, cuda_fp16.h, cublas_v2.h
 ├── slurm/
-│   └── discovery.sbatch    # build + test + benchmark job for USC Discovery
+│   ├── discovery.sbatch    # build + test + benchmark job for USC Discovery
+│   └── sanitize.sbatch     # compute-sanitizer memcheck + racecheck over the kernel tests
 ├── setup_pod.sh            # deps → build → check_env.py (--deps-only / --build-only)
 ├── check_env.py            # phase-0 gates (see below)
 ├── sync.sh                 # rsync push loop, mac → pod
@@ -251,6 +252,11 @@ loop on the short-wait debug partition (A40, 1 hour max):
 BENCH=0 sbatch --account=<project_id> --partition=debug \
     --gpus-per-task=a40:1 --time=00:45:00 gpu/slurm/discovery.sbatch
 ```
+
+Each job builds fresh for sm_80/86/89 (A100, A40, L40S), so one binary
+runs on any of them and a build dir cached for another card never leaks
+in. After a build, `sbatch --account=<project_id> gpu/slurm/sanitize.sbatch`
+runs compute-sanitizer's memcheck and racecheck over the kernel tests.
 
 Load the modules again in every new login session before activating the
 venv; its python is the module's.

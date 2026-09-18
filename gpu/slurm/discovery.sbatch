@@ -33,6 +33,11 @@ cd "$SLURM_SUBMIT_DIR"
 echo "job $SLURM_JOB_ID on $(hostname)"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 
+# one binary for every generation the job may land on (A100 8.0, A40
+# 8.6, L40S 8.9), from a fresh build dir: cmake caches the gpu it was
+# first configured on, so a stale dir would silently target the wrong one
+export CUDAARCHS="${CUDAARCHS:-80;86;89}"
+rm -rf gpu/build
 bash gpu/setup_pod.sh --build-only --profiler-optional
 python3 -m pytest gpu/tests -v
 
