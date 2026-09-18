@@ -168,9 +168,15 @@ class CpuHnsw(Baseline):
 
     def search(self, queries, k, ef=50, **knobs):
         t0 = time.perf_counter()
-        ids = [self.index.search(q, k=k, ef=ef)[0] for q in queries]
+        found = [self.index.search(q, k=k, ef=ef)[0] for q in queries]
         wall = (time.perf_counter() - t0) * 1000.0
-        return np.asarray(ids, dtype=np.int64), wall, None
+        # a search can return fewer than k ids when its entry point sits in
+        # a small layer-0 component; pad with -1 like the gpu does, which
+        # recall scores as misses
+        ids = np.full((len(found), k), -1, dtype=np.int64)
+        for row, got in zip(ids, found):
+            row[: len(got)] = got
+        return ids, wall, None
 
 
 # ---------------------------------------------------------------- ours
