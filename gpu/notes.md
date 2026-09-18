@@ -256,3 +256,28 @@ gpu flat, cublas + k2           2048       0.999      0.054        0.052       1
   the l40s earlier). first ncu target.
 - the l40s run of the corrected index is queued (job 12147828); the README
   table will switch to it when it lands.
+
+### sift-1M on one L40S, corrected index (job 12147828, same code as the a40 run)
+
+```
+method                         batch   recall@10   ms/q wall   ms/q kernel      qps
+cpu hnsw (numpy), ef=200           1       0.995      2.988           -           335
+gpu hnsw (k3), ef=200              1       0.995      2.907        2.647          344
+cpu hnsw (numpy), ef=200        2048       0.993      2.904           -           344
+gpu hnsw (k3), ef=200           2048       0.993      0.0178       0.0026      56,265
+gpu hnsw (k3), ef=50            2048       0.936      0.0161       0.0009      62,188
+gpu flat, k1 + k2               2048       0.999      0.062        0.059       16,186
+gpu flat, cublas + k2           2048       0.999      0.031        0.029       32,146
+```
+
+- batch 1: a wash (2.91 vs 2.99 ms). this node's cpu is faster than the
+  a40 node's for the same numpy walk (2.99 vs 3.82 ms), so the batch-1
+  comparison moves with the host; the shape of the result does not.
+  batch 2048: 163x the cpu at the same recall.
+- kernel time at 2048 is 0.0026 ms/q against 0.0178 wall — descend 0.015,
+  the rest transfers. the host walk is now ~6x the kernel; moving it onto
+  the device is the obvious next step.
+- cublas flat 32,146 qps @ 0.999 (93x the cpu); hand k1 2.0x slower than
+  cublas, same as the first l40s run (2.7x on the a40).
+- the README table and headline carry this run; the a40 job stays in
+  gpu/bench/results/ for the cross-card comparison.
