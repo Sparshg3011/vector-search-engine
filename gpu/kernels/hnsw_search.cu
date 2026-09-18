@@ -103,6 +103,9 @@ __global__ void vsg_k3_hnsw_search(
       }
     }
     if (idx < 0) break;
+    // the ballot syncs execution, not memory: order every lane's read of cf
+    // above before lane 0 overwrites it
+    __syncwarp();
     if (lane == 0) cf[idx] = 1;
     __syncwarp();
 
