@@ -194,3 +194,65 @@ gpu flat, cublas + k2           2048       0.999      0.031        0.0286      3
   changes the cpu graph, so it means a rebuild and re-measuring the cpu
   chapter's published numbers. the benchmark now pads short results with
   -1 (5e5db24) so the cpu baseline runs at every batch size.
+
+## 2026-09-17 — the duplicate-vector fix, and the corrected numbers
+
+### the fix
+
+`_select_neighbors` now rejects a candidate only when a chosen neighbor is
+*strictly* closer to it than the query (`<`, as hnswlib and faiss do). On
+SIFT-1M that turns the two-node islands back into normal nodes: queries
+returning fewer than k results 8 -> 0, layer-0 nodes with no incoming link
+23 -> 3, median degree unchanged at 19. on fashion-mnist (no exact
+duplicates to speak of) the graph changed by 7 links out of 740k.
+
+both indexes rebuilt (sift: 1414 s vecstore, 120 s faiss) and re-measured on
+an idle machine. cpu tables in the README regenerated from results/*.json.
+
+```
+sift-1M, cpu, this mac      recall@10 (old -> new)   ms/query (old -> new)
+  ef=10                     0.638 -> 0.647           0.16 -> 0.20
+  ef=50                     0.916 -> 0.921           0.47 -> 0.56
+  ef=200                    0.990 -> 0.993 (=faiss)  1.66 -> 1.97
+  exact                                              7.2  -> 7.6
+```
+
+recall is up at every point; latency ~15% up because the graph keeps the
+links it used to prune, and the machine measures ~10% slower than in july
+(faiss moved the same way). the clustered-data claim in the README
+(0.75 -> 0.96) re-measured at 0.750 -> 0.964, unchanged.
+
+### descend() batched
+
+the host-side upper-layer walk was a python loop per query per hop, ~97%
+of the batched gpu wall time. it now walks the whole batch with array ops
+over compact per-layer fp32 tables built once per loaded index (profile of
+the loop version: 68% of the time was gathering neighbor rows out of the
+fp16 array and converting them). same entries on all 10,000 sift queries;
+0.066 -> 0.016 ms/query at batch on the mac. still ~3x the k3 kernel time
+on an a40; moving the upper-layer walk onto the device is the next step
+if that ever matters.
+
+### sift-1M on one A40, corrected index (job 12147871, main @ c8b8732)
+
+```
+method                         batch   recall@10   ms/q wall   ms/q kernel      qps
+cpu hnsw (numpy), ef=200           1       0.995      3.822           -           262
+gpu hnsw (k3), ef=200              1       0.995      4.430        4.066          226
+cpu hnsw (numpy), ef=200        2048       0.993      3.512           -           285
+gpu hnsw (k3), ef=200           2048       0.993      0.0227       0.0062      44,060
+gpu hnsw (k3), ef=50            2048       0.936      0.0184       0.0019      54,488
+gpu flat, k1 + k2               2048       0.999      0.148        0.146        6,772
+gpu flat, cublas + k2           2048       0.999      0.054        0.052       18,405
+```
+
+- batch 1: gpu loses (4.43 vs 3.82 ms). batch 2048: 155x the cpu at the
+  same recall. wall/kernel gap at 2048 is now 0.0227 vs 0.0062 ms —
+  descend 0.016, the rest transfers.
+- recall parity, rebuilt index: cpu search replayed over all 10,000
+  queries and scored on exactly the query subset each batch used —
+  |gpu − cpu| ≤ 0.0005 in every cell, 0.0000–0.0001 at batch 2048.
+- hand-written k1 is 2.7x slower than the cublas path on the a40 (2.0x on
+  the l40s earlier). first ncu target.
+- the l40s run of the corrected index is queued (job 12147828); the README
+  table will switch to it when it lands.
