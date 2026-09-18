@@ -2,154 +2,136 @@
 
 # vector-search-engine
 
-**An HNSW approximate-nearest-neighbor index, built from scratch in pure NumPy — and benchmarked honestly against FAISS on a million vectors.**
+**An HNSW approximate-nearest-neighbor index built from scratch in NumPy and benchmarked honestly against FAISS on a million vectors — then ported to CUDA, where the same search answers over a hundred times more queries per second at the same recall.**
 
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![NumPy](https://img.shields.io/badge/NumPy-013243?style=for-the-badge&logo=numpy&logoColor=white)](https://numpy.org/)
+[![CUDA](https://img.shields.io/badge/CUDA-12-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](#gpu-results)
 [![FAISS](https://img.shields.io/badge/FAISS-baseline-0668E1?style=for-the-badge&logo=meta&logoColor=white)](https://github.com/facebookresearch/faiss)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![CI](https://img.shields.io/github/actions/workflow/status/Sparshg3011/vector-search-engine/tests.yml?style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/Sparshg3011/vector-search-engine/actions)
 [![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)](LICENSE)
 
-[Features](#features) · [Architecture](#architecture) · [Results](#results) · [Quick Start](#quick-start) · [How It Works](#how-it-works) · [API Reference](#api-reference)
+[Interactive demo](https://sparshg3011.github.io/cuda-hnsw/) · [CPU Results](#cpu-results) · [GPU Results](#gpu-results) · [How It Works](#how-it-works) · [Usage](#usage) · [API Reference](#api) · [Limitations](#limitations)
 
 </div>
 
 ---
 
-## About
+**CPU.** On SIFT-1M the index reaches 0.993 recall@10 at 1.97 ms per query on one thread. FAISS's HNSW, built with the same parameters, reaches the same recall at 0.28 ms.
 
-`vector-search-engine` implements the **Hierarchical Navigable Small World (HNSW)** graph index — the algorithm behind most modern vector databases — from the ground up in Python and NumPy. No search library does the searching: the layered graph, the neighbor-selection heuristic, the greedy-plus-beam query, persistence, and the benchmark harness are all in this repo, in readable code.
+**GPU.** On an NVIDIA L40S the same index answers 56,265 queries per second at batch 2,048. That is 163× the CPU of the same node at the same recall (0.993). One query at a time, the GPU is no faster: 2.91 ms against 2.99 ms.
 
-The deliverable is not "a faster FAISS" — it's an **honest recall-vs-latency curve**. On a million SIFT vectors this index matches FAISS's recall to within a few thousandths at every operating point, and a browser [playground](#playground) lets you watch a query descend the graph layer by layer.
+<p align="center">
+  <img src="gpu/bench/results/discovery-12147828-qps_vs_batch.png" alt="Queries per second against batch size on SIFT-1M" width="620">
+</p>
 
-> **Headline:** 0.99 recall@10 at 1.66 ms/query on 1,000,000 vectors — recall on par with FAISS, all in pure NumPy.
+SIFT-1M on an L40S at `ef=50`. The CPU answers queries one after another, so its line is flat. A batch keeps the whole GPU busy, so the GPU lines climb.
 
----
+An [interactive walkthrough](https://sparshg3011.github.io/cuda-hnsw/) of the GPU port runs in the browser.
 
-## Features
+## CPU results
 
-| Feature | Description |
-|:--------|:------------|
-| **HNSW index from scratch** | Layered navigable graph — random level assignment, greedy descent, and an `ef`-wide beam search at layer 0. No `faiss`, `hnswlib`, or `annoy` in the search path. |
-| **Neighbor-selection heuristic** | The paper's diversity rule (keep a link only if it opens a new direction) — measured to lift recall from **0.75 → 0.96** on clustered data. |
-| **Exact baseline + recall eval** | A brute-force `FlatIndex` provides ground truth; `recall@k` grades the approximate index against it. |
-| **Three distance metrics** | Squared L2 (float64 accumulation, overflow-safe), inner product, and cosine, behind one registry. |
-| **Persistence, no pickle** | `save`/`load` to a single `.npz` (vectors) + JSON (graph, params, RNG state) — portable and safe to open. |
-| **Honest FAISS benchmark** | Same data, same `M`/`ef_construction`, single thread, median latency, official ann-benchmarks ground truth — up to 1M vectors. |
-| **Interactive playground** | A FastAPI + SVG demo: click the map, watch the search hop across layers and fan out on layer 0. |
-| **54 tests, green CI** | Every push runs the suite on GitHub Actions, including a statistical test of the level distribution and a recall-vs-FAISS check. |
+Both indexes use `M=16` and `ef_construction=100` on a single thread. Latency is the median over 500 queries on an Apple M5. Recall is scored against the ground truth that ships with ann-benchmarks. `python benchmarks/compare.py --dataset <name>` reproduces a table.
 
----
+**SIFT, 1,000,000 vectors, 128 dimensions**
 
-## Architecture
+| ef | recall@10, vecstore | recall@10, FAISS | ms/query, vecstore | ms/query, FAISS |
+|---:|:---:|:---:|:---:|:---:|
+| 10  | 0.647 | 0.656 | 0.20 | 0.03 |
+| 20  | 0.793 | 0.797 | 0.29 | 0.04 |
+| 50  | 0.921 | 0.920 | 0.56 | 0.08 |
+| 100 | 0.973 | 0.972 | 1.11 | 0.15 |
+| 200 | 0.993 | 0.993 | 1.97 | 0.28 |
 
-```mermaid
-graph TB
-    subgraph Demo ["Playground · browser"]
-        UI[SVG canvas<br/>click to search]
-    end
-    subgraph Api ["Backend · FastAPI"]
-        EP[api · graph · insert · search]
-        TR[traced_search<br/>records every hop]
-    end
-    subgraph Core ["vecstore · pure NumPy"]
-        H[HNSWIndex<br/>layered graph]
-        FL[FlatIndex<br/>exact baseline]
-        DI[distances<br/>l2 · ip · cosine]
-        EV[eval · recall@k]
-        PS[(save / load<br/>npz + json)]
-    end
-    subgraph Bench ["Benchmarks"]
-        CP[compare.py]
-        DS[ann-benchmarks<br/>SIFT · Fashion-MNIST]
-        FA[(FAISS<br/>reference)]
-    end
-    UI --> EP --> TR --> H
-    H --> DI
-    FL --> DI
-    H --> PS
-    CP --> H
-    CP --> FL
-    CP -->|recall vs| FA
-    CP --> DS
-    EV --> CP
-    style Demo fill:#0a0a0a,stroke:#534ab7,stroke-width:2px,color:#fff
-    style Api fill:#0a0a0a,stroke:#1d9e75,stroke-width:2px,color:#fff
-    style Core fill:#0a0a0a,stroke:#534ab7,stroke-width:2px,color:#fff
-    style Bench fill:#0a0a0a,stroke:#d97730,stroke-width:2px,color:#fff
-```
+<p align="center">
+  <img src="results/sift-128-euclidean.png" alt="SIFT-1M recall against latency, vecstore and FAISS" width="620">
+</p>
 
-### Query flow
+**Fashion-MNIST, 60,000 vectors, 784 dimensions**
 
-```
-   query vector
-        │
-        ▼
- ┌────────────┐   greedy hops    ┌────────────┐   drop a layer   ┌────────────┐
- │  layer 2   │ ───────────────▶ │  layer 1   │ ───────────────▶ │  layer 0   │
- │  entry pt  │  long jumps      │  medium    │  shorter hops    │  ef-wide   │
- └────────────┘                  └────────────┘                  └─────┬──────┘
-   sparse "highway"                                                    │ top-k
-   few nodes                                                           ▼
-                                                              nearest neighbors
-```
+| ef | recall@10, vecstore | recall@10, FAISS | ms/query, vecstore | ms/query, FAISS |
+|---:|:---:|:---:|:---:|:---:|
+| 10  | 0.932 | 0.932 | 0.26 | 0.04 |
+| 20  | 0.978 | 0.981 | 0.36 | 0.06 |
+| 50  | 0.996 | 0.995 | 0.69 | 0.11 |
+| 100 | 0.998 | 0.998 | 1.15 | 0.18 |
+| 200 | 0.999 | 1.000 | 1.89 | 0.30 |
 
----
+- Recall is within 0.01 of FAISS at every setting, and within 0.001 from `ef=50` up. Same algorithm, same parameters, same graph quality.
+- Latency is about 7× FAISS's. That is the cost of doing each graph hop in NumPy instead of C++.
+- Exact search on the same machine takes 7.6 ms per query on SIFT, so at 0.993 recall the index is 3.8× faster than brute force.
+- Building the SIFT index takes 24 minutes, against 2 minutes for FAISS, both single-threaded.
+- The neighbor-selection heuristic matters on clustered data. Compared with keeping the `M` closest candidates, it raises recall@10 from 0.75 to 0.96 on a synthetic clustered set.
 
-## Results
+## GPU results
 
-Both indexes built with `M=16`, `ef_construction=100`; single thread; median latency over 500 queries; recall scored against the **official ann-benchmarks ground truth**. Reproduce with `python benchmarks/compare.py --dataset <name>`.
+The port tests one claim. A graph walk is sequential, so a single query cannot run faster on a GPU. Throughput has to come from running thousands of walks at once.
 
-### SIFT — 1,000,000 vectors, dim 128
+SIFT-1M, the 10,000 official queries, `k=10`, recall against fp64 ground truth. Each figure is the median of 20 timed runs after warmup; batch 1 uses 200 distinct queries. Wall time includes host-device copies. Kernel time is CUDA-event time on the device alone. The CPU rows are one core of the same node, so every comparison is within one machine. `sbatch gpu/slurm/discovery.sbatch` reproduces the run, and the raw output is in [`gpu/bench/results/`](gpu/bench/results/).
 
-| ef | recall@10 (vecstore) | recall@10 (faiss) | ms/query (vecstore) | ms/query (faiss) |
-|---:|:--------------------:|:-----------------:|:-------------------:|:----------------:|
-| 10  | 0.638 | 0.659 | 0.16 | 0.03 |
-| 20  | 0.791 | 0.794 | 0.24 | 0.06 |
-| 50  | 0.916 | 0.919 | 0.47 | 0.11 |
-| 100 | 0.968 | 0.972 | 0.93 | 0.22 |
-| 200 | **0.990** | 0.993 | **1.66** | 0.40 |
+**One NVIDIA L40S**
 
-<div align="center">
-  <img src="results/sift-128-euclidean.png" alt="SIFT-1M recall vs latency" width="620">
-</div>
+| search | batch | recall@10 | ms/query, wall | ms/query, kernel | queries/s |
+|:--|--:|--:|--:|--:|--:|
+| CPU HNSW, NumPy, `ef=200` | 1 | 0.995 | 2.988 | | 335 |
+| GPU HNSW, K3, `ef=200` | 1 | 0.995 | 2.907 | 2.6474 | 344 |
+| CPU HNSW, NumPy, `ef=200` | 2,048 | 0.993 | 2.904 | | 344 |
+| GPU HNSW, K3, `ef=200` | 2,048 | 0.993 | 0.018 | 0.0026 | 56,265 |
+| GPU HNSW, K3, `ef=50` | 2,048 | 0.936 | 0.016 | 0.0009 | 62,188 |
+| GPU brute force, K1 + K2 | 2,048 | 0.999 | 0.062 | 0.0593 | 16,186 |
+| GPU brute force, cuBLAS + K2 | 2,048 | 0.999 | 0.031 | 0.0286 | 32,146 |
 
-Exact brute-force search costs **7.2 ms/query** on this machine. At 99% recall this index answers in **1.66 ms — 4.3× faster than exact** — and the gap widens with dataset size (exact search scales linearly, graph search roughly logarithmically).
+<p align="center">
+  <img src="gpu/bench/results/discovery-12147828-recall_vs_qps.png" alt="SIFT-1M recall against throughput on the GPU" width="620">
+</p>
 
-### Fashion-MNIST — 60,000 vectors, dim 784
+- At batch 1 the GPU takes 2.91 ms and the CPU 2.99 ms. No gain, as expected.
+- At batch 2,048 the same search runs at 163× the CPU's throughput with the same recall. The kernel accounts for 0.0026 ms of the 0.018 ms per query. Most of the rest, 0.015 ms, is the upper-layer descent, which still runs on the host.
+- Brute force on the GPU beats the CPU's graph search outright. With cuBLAS distances and K2 selection it answers 32,146 queries per second at 0.999 recall, 93× the CPU. The hand-written distance kernel K1 is 2.0× slower than cuBLAS on the same job.
+- Brute force scores 0.999 rather than 1.000 because SIFT distances are integers. 137 of the 10,000 queries have an exact tie at tenth place, and a tie broken differently counts as a miss.
 
-| ef | recall@10 (vecstore) | recall@10 (faiss) | ms/query (vecstore) | ms/query (faiss) |
-|---:|:--------------------:|:-----------------:|:-------------------:|:----------------:|
-| 10  | 0.932 | 0.932 | 0.19 | 0.03 |
-| 20  | 0.978 | 0.980 | 0.25 | 0.04 |
-| 50  | 0.996 | 0.995 | 0.47 | 0.08 |
-| 100 | 0.998 | 0.998 | 0.78 | 0.13 |
-| 200 | 0.999 | 1.000 | 1.36 | 0.23 |
+**The same code on two cards**
 
-<div align="center">
-  <img src="results/fashion-mnist-784-euclidean.png" alt="Fashion-MNIST recall vs latency" width="620">
-</div>
+| GPU | batch 1, GPU vs CPU (ms) | HNSW at batch 2,048 (queries/s) | vs CPU | recall@10 | cuBLAS brute force (queries/s) |
+|:--|--:|--:|--:|--:|--:|
+| L40S | 2.91 vs 2.99 | 56,265 | 163× | 0.993 | 32,146 |
+| A40 | 4.43 vs 3.82 | 44,060 | 155× | 0.993 | 18,405 |
 
-**Reading it honestly:** recall tracks FAISS to within a few thousandths at every operating point — same algorithm, same parameters, same graph quality. Latency sits ~4–6× behind FAISS's hand-tuned C++, which is the price of NumPy per graph hop. Building 1M vectors took 19 min here vs 3 min for FAISS, single-threaded.
+Each row is one job on one node, so the CPU figures differ between rows. The result has the same shape on both cards.
 
-### Playground
+### Verification
 
-Click anywhere on the 2-D map and watch the search descend: an orange hop on the top layer, purple hops on layer 1, teal exploration across layer 0, and pink rings on the `k` nearest neighbors found. The `ef` slider trades recall for speed live.
+- 76 tests hold each kernel to fp64 NumPy or to the CPU index. The tolerances were fixed in [`gpu/SPEC.md`](gpu/SPEC.md) before the first GPU run. All pass on an A40 and an L40S.
+- `compute-sanitizer` memcheck and racecheck report no errors and no hazards. During bring-up racecheck found one real hazard in K3, an unordered read and write of the beam's expanded flags. It never produced a wrong result, and it is fixed.
+- The GPU and CPU searches agree. Replayed over all 10,000 queries, their recall differs by at most 0.0005 against a gate of 0.01.
+- Running the GPU benchmark exposed a bug in the CPU index. Exact duplicate vectors (29,076 rows in SIFT-1M) formed closed two-node islands because the heuristic rejected ties, and 8 of the 10,000 queries returned fewer than `k` results. The fix is one comparison. Both indexes were rebuilt and every CPU number above was measured again.
 
-<div align="center">
-  <img src="results/playground-demo.png" alt="Playground: a search descending the HNSW layers" width="560">
-</div>
+## How it works
 
----
+### HNSW
 
-## Quick Start
+HNSW is a skip list generalized to a graph. Each inserted vector draws a level from an exponential distribution. Most vectors live only on layer 0, and a few reach the sparse upper layers.
 
-### Prerequisites
+1. **Insert.** Descend greedily from the entry point to the new node's level. At each layer from there down, find the `ef_construction` closest nodes and link to the best `M` of them in both directions. Nodes that end up over-full are pruned back.
+2. **Neighbor selection.** A candidate becomes a link only if it is closer to the new node than to every neighbor already chosen. Links then point in different directions instead of into one cluster, which keeps distant regions reachable.
+3. **Search.** Hop greedily down the upper layers to get near the query cheaply. On layer 0, run a best-first search with a candidate list of size `ef` and return the `k` closest.
 
-- **Python** 3.10+
+Two parameters set the trade-off between recall and latency: `M`, the links per node, and `ef`, the width of the search at query time.
 
-### 1. Install
+### The CUDA port
+
+`export_index` writes a saved index as fp16 rows padded to a multiple of 8, an int32 layer-0 adjacency table, and the upper layers as JSON. Three kernels sit behind a pybind11 extension.
+
+- **K1, distance matrix.** Blocks of 16×16 threads. Each block copies 32-dimension chunks of its 16 queries and 16 base rows into shared memory once, and every thread reads them from there. Rows are stored in fp16 and accumulated in fp32, because SIFT's squared distances overflow fp16. The matrix is computed in chunks so that it never exceeds 2 GB.
+- **K2, top-k.** Each row of the distance matrix is dealt across the threads of a block. Every thread keeps a sorted shortlist of `k`, and `k` rounds of an argmin reduction merge the shortlists.
+- **K3, beam search.** One warp of 32 threads per query. The walk itself stays sequential, and each step's distance evaluations are split across the warp's 32 lanes and reduced. The visited set is an 8,192-slot hash table per query in global memory. That size came from measurement: a query at `ef=200` visits a median of 2,792 nodes of SIFT-1M (p95 3,547), about seven times what the first design assumed. The beam is a single sorted list of length `ef` in shared memory, and it expands exactly the nodes that the CPU's two-heap loop expands. The upper layers are walked on the host for the whole batch before launch.
+
+[`gpu/SPEC.md`](gpu/SPEC.md) is the binding contract for the kernels. [`gpu/notes.md`](gpu/notes.md) logs the measurements behind each design decision.
+
+## Usage
+
+Python 3.10 or newer.
 
 ```bash
 git clone https://github.com/Sparshg3011/vector-search-engine.git
@@ -157,8 +139,6 @@ cd vector-search-engine
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
-
-### 2. Use the index
 
 ```python
 import numpy as np
@@ -169,142 +149,117 @@ for vec in np.random.randn(10_000, 128).astype("float32"):
     index.add(vec)
 
 ids, dists = index.search(np.random.randn(128), k=10, ef=50)
-index.save("index.npz")           # portable: npz + json, no pickle
+index.save("index.npz")
 index = HNSWIndex.load("index.npz")
 ```
 
-### 3. Run the tests
+An index is saved as one `.npz` for the vectors plus JSON for the graph, parameters and RNG state. Nothing is pickled.
+
+Tests and benchmark. The benchmark downloads its dataset on the first run.
 
 ```bash
-pytest -q                          # 54 tests
-```
+pip install -e ".[dev,demo]"
+pytest -q
 
-### 4. Run the benchmark (downloads the dataset on first run)
-
-```bash
 pip install -e ".[bench]"
 python benchmarks/compare.py --dataset fashion-mnist-784-euclidean
 ```
 
-### 5. Launch the playground
+### Playground
+
+Click anywhere on the 2-D map to run a search. The demo draws the hops on the upper layers, the exploration across layer 0, and the `k` neighbors found. The `ef` slider changes the search width live.
+
+<p align="center">
+  <img src="results/playground-demo.png" alt="Playground showing a search descending the HNSW layers" width="560">
+</p>
 
 ```bash
 pip install -e ".[demo]"
-uvicorn playground.server:app      # → http://localhost:8000
+uvicorn playground.server:app      # http://localhost:8000
 ```
 
----
-
-## How It Works
-
-HNSW is a **skip list generalized to a graph**. Each inserted vector is assigned a random level from an exponential distribution — most live only on layer 0, a few reach the sparse upper layers.
-
-1. **Insert** — draw a level, greedily descend from the entry point to that level, then at each layer find the `ef_construction` closest nodes and link to the best `M` of them (bidirectionally). Over-full nodes are pruned back.
-2. **Neighbor selection** — a candidate becomes a link only if it is closer to the new node than to every neighbor already chosen. This keeps links *diverse* (pointing in different directions) instead of clustered, which is what makes distant regions reachable.
-3. **Search** — greedy-hop down the upper "highway" layers to get near the query cheaply, then run a bounded best-first search on layer 0 with a candidate heap of size `ef`, and return the `k` closest.
-
-Two knobs define the whole recall/latency trade-off: **`M`** (links per node — graph richness) and **`ef`** (beam width at query time — how hard you look). The [results](#results) above are those two knobs, swept.
-
----
-
-## Project Structure
-
-```
-vector-search-engine/
-├── vecstore/                  # the library — pure NumPy, zero search deps
-│   ├── hnsw.py                #   HNSW index: insert, search, heuristic, save/load
-│   ├── flat.py                #   exact brute-force baseline (ground truth)
-│   ├── distances.py           #   l2 · inner product · cosine
-│   ├── eval.py                #   recall@k
-│   ├── trace.py               #   traced_search — records every hop for the demo
-│   └── datasets.py            #   ann-benchmarks dataset loader
-│
-├── benchmarks/
-│   ├── compare.py             #   vecstore vs FAISS → recall/latency curve
-│   ├── memory.py              #   footprint breakdown (vectors vs graph)
-│   └── ef_sweep.py            #   quick ef sweep on random data
-│
-├── playground/
-│   ├── server.py              #   FastAPI: graph · insert · search
-│   └── static/index.html      #   single-file SVG frontend, no build step
-│
-├── results/                   #   committed benchmark curves + numbers
-├── tests/                     #   54 tests
-└── Dockerfile                 #   deploy the playground (CPU-only)
-```
-
----
-
-## API Reference
-
-### Python library
-
-| Call | Description |
-|:-----|:------------|
-| `HNSWIndex(dim, metric="l2", M=16, ef_construction=100, seed=0)` | Create an index. `metric` ∈ `{l2, ip, cosine}`. |
-| `index.add(vector)` | Insert one vector; returns its node id. |
-| `index.search(query, k=10, ef=50)` | Return `(ids, distances)` of the `k` nearest. |
-| `index.save(path)` / `HNSWIndex.load(path)` | Persist / restore (npz + json). |
-| `FlatIndex(dim, metric="l2")` | Exact brute-force index for ground truth. |
-| `recall(true_ids, got_ids)` | Fraction of true neighbors retrieved. |
-
-### Playground HTTP API
-
-| Method | Endpoint | Description |
-|:-------|:---------|:------------|
-| `GET`  | `/api/graph` | Nodes (with layer), per-layer edges, entry point |
-| `POST` | `/api/search` | `{x, y, ef, k}` → results + per-layer hop trace + stats |
-| `POST` | `/api/insert` | `{x, y}` → new node id and its assigned level |
-| `POST` | `/api/reset` | `{n, seed}` → rebuild a fresh random index |
-
----
-
-## Deployment
-
-The playground is CPU-only with no API keys — it runs anywhere a container runs.
+Or in a container. It is CPU-only and binds to `$PORT` when that is set.
 
 ```bash
 docker build -t vecstore-playground .
-docker run -p 8000:8000 vecstore-playground     # → http://localhost:8000
+docker run -p 8000:8000 vecstore-playground
 ```
 
-On Railway or Fly.io, point the platform at the `Dockerfile`; it binds to `$PORT` automatically.
+### GPU
 
----
+On USC's Discovery cluster. Compute nodes have no internet access, so the downloads happen on a login node. [`gpu/SPEC.md`](gpu/SPEC.md) has the exact steps.
 
-## Tech Stack
+```bash
+bash gpu/setup_pod.sh --deps-only
+python3 gpu/bench/fetch_queries.py sift-128-euclidean
+sbatch --account=<project_id> gpu/slurm/discovery.sbatch     # build, tests, benchmark on an L40S
+sbatch --account=<project_id> gpu/slurm/sanitize.sbatch      # memcheck and racecheck
+```
 
-| Layer | Technology |
-|:------|:-----------|
-| Core index | Python 3.10+ · NumPy |
-| Exact baseline | NumPy (brute force) |
-| Benchmark reference | FAISS (`faiss-cpu`) |
-| Datasets | ann-benchmarks (HDF5 via `h5py`) |
-| Plotting | matplotlib |
-| Playground API | FastAPI · Uvicorn |
-| Frontend | Vanilla JS + inline SVG (no build step) |
-| Tests / CI | pytest · GitHub Actions |
+On any machine with a CUDA 12 toolchain.
 
----
+```bash
+bash gpu/setup_pod.sh                 # dependencies, build, six environment checks
+python3 -m pytest gpu/tests -v
+python3 gpu/bench/run.py --gpu-index data/sift.gpu.npz --queries data/sift-128-euclidean-queries.npy
+```
 
-## Contributing
+## API
 
-1. Fork the repository
-2. Create your feature branch → `git checkout -b feat/amazing-feature`
-3. Commit your changes → `git commit -m "feat: add amazing feature"`
-4. Push to the branch → `git push origin feat/amazing-feature`
-5. Open a Pull Request
+**`vecstore`**
 
----
+| Call | Description |
+|:--|:--|
+| `HNSWIndex(dim, metric="l2", M=16, ef_construction=100, seed=0)` | Create an index. `metric` is one of `l2`, `ip`, `cosine`. |
+| `index.add(vector)` | Insert one vector and return its node id. |
+| `index.search(query, k=10, ef=50)` | Return `(ids, distances)` of the `k` nearest. |
+| `index.save(path)`, `HNSWIndex.load(path)` | Persist and restore. |
+| `FlatIndex(dim, metric="l2")` | Exact brute-force index, used for ground truth. |
+| `recall(true_ids, got_ids)` | Fraction of the true neighbors retrieved. |
+
+**`vecstore_gpu`**, which needs the built extension
+
+| Call | Description |
+|:--|:--|
+| `export_index(src, out, normalize=False)` | Turn a saved or live `HNSWIndex` into a `.gpu.npz`. |
+| `load_gpu_index(path)`, `.validate()` | Read a `.gpu.npz` and check every invariant the kernels rely on. |
+| `descend(index, queries)` | Walk the upper layers for a whole batch in NumPy and return each query's layer-0 entry point. |
+| `DeviceIndex(vectors, dim, metric)` | Upload the rows to the GPU. Methods: `.set_graph(adjacency, degrees, entry)`, `.brute_force(queries, k, use_cublas)`, `.hnsw(queries, entries, k, ef)`, `.last_kernel_ms()`. |
+
+## Repository layout
+
+```
+vecstore/            the library, NumPy only
+  hnsw.py            index: insert, search, heuristic, save and load
+  flat.py            exact brute-force baseline
+  distances.py       l2, inner product, cosine
+  eval.py            recall@k
+  trace.py           traced_search, records every hop for the playground
+  datasets.py        ann-benchmarks loader
+benchmarks/          compare.py (vecstore against FAISS), memory.py, ef_sweep.py
+gpu/
+  kernels/           distances.cu, topk.cu, hnsw_search.cu
+  src/               launchers and pybind11 bindings
+  vecstore_gpu/      export, load, descend, and the built extension
+  tests/             76 tests against NumPy and the CPU index
+  bench/             run.py, baselines.py, plot.py, results/
+  slurm/             Discovery job scripts
+  tools/             precheck.py, a structural compile that needs no nvcc
+  SPEC.md            contract for the kernels
+  notes.md           engineering log
+playground/          FastAPI server and a single-file SVG frontend
+results/             CPU benchmark numbers and figures
+tests/               54 tests, run on every push
+```
+
+## Limitations
+
+- The CPU index is a NumPy reference implementation. It matches FAISS's recall at about 7× the latency and 12× the build time. It supports insertion and search only. There is no delete.
+- K1 is 2.0× slower than cuBLAS on the L40S and 2.7× on the A40. It has not been profiled yet.
+- The upper-layer descent runs on the host. At batch 2,048 it is 0.015 ms of the 0.018 ms per query, several times the kernel itself.
+- There is no comparison yet against FAISS-GPU or cuVS.
+- The GPU path uses one device, and the index has to fit in its memory. The kernels support `l2` and `ip`; cosine is handled by normalizing the vectors at export. `ef` is limited to 256.
 
 ## License
 
-Released under the MIT License — see [LICENSE](LICENSE) for details.
-
----
-
-<div align="center">
-
-**[Back to Top](#vector-search-engine)**
-
-</div>
+MIT. See [LICENSE](LICENSE).
