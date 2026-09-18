@@ -150,7 +150,7 @@ class HNSWIndex:
                 break
             if chosen:
                 to_chosen = self._dist(self._vectors[node], self._vectors[chosen])
-                if to_chosen.min() <= d:
+                if to_chosen.min() < d:
                     continue
             chosen.append(node)
         return chosen
