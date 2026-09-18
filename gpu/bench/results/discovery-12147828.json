@@ -1,0 +1,366 @@
+{
+  "created": "2026-09-17T21:03:34",
+  "gpu_index": "/home1/sparshg/vector-search-engine/data/sift.gpu.npz",
+  "source_index": "/home1/sparshg/vector-search-engine/data/sift-128-euclidean-vecstore.npz",
+  "k": 10,
+  "dataset": {
+    "n": 1000000,
+    "dim": 128,
+    "stride": 128,
+    "metric": "l2",
+    "normalized": false,
+    "M": 16
+  },
+  "queries": {
+    "source": "data/sift-128-euclidean-queries.npy",
+    "pool": 10000,
+    "wrapped": false
+  },
+  "protocol": {
+    "warmup_reps": 3,
+    "timed_reps": 20,
+    "batch1_reps": 200,
+    "batches": [
+      1,
+      128,
+      2048
+    ],
+    "ef": [
+      50,
+      200
+    ],
+    "nprobe": [
+      1,
+      8,
+      32,
+      128
+    ],
+    "statistic": "median over timed reps"
+  },
+  "environment": {
+    "python": "3.11.9",
+    "numpy": "2.4.6",
+    "platform": "Linux-4.18.0-553.126.1.el8_10.x86_64-x86_64-with-glibc2.28",
+    "omp_num_threads": null,
+    "git_rev": "6a054cc",
+    "git_dirty": true,
+    "gpus": [
+      "NVIDIA L40S, 580.159.04, 2520 MHz"
+    ],
+    "faiss": null,
+    "cuvs": null,
+    "vecstore_gpu": "present"
+  },
+  "baselines": {
+    "cpu_hnsw": {
+      "available": true,
+      "reason": null,
+      "extra": {}
+    },
+    "gpu_flat_hand": {
+      "available": true,
+      "reason": null,
+      "extra": {}
+    },
+    "gpu_flat_cublas": {
+      "available": true,
+      "reason": null,
+      "extra": {}
+    },
+    "gpu_hnsw": {
+      "available": true,
+      "reason": null,
+      "extra": {}
+    }
+  },
+  "rows": [
+    {
+      "baseline": "cpu_hnsw",
+      "batch": 1,
+      "knob": "ef",
+      "knob_value": 50,
+      "k": 10,
+      "recall": 0.9395,
+      "reps": 200,
+      "queries_scored": 200,
+      "wall_ms_batch": 0.894986093044281,
+      "kernel_ms_batch": null,
+      "wall_ms_per_query": 0.894986093044281,
+      "kernel_ms_per_query": null,
+      "qps": 1117.3357974742555
+    },
+    {
+      "baseline": "cpu_hnsw",
+      "batch": 1,
+      "knob": "ef",
+      "knob_value": 200,
+      "k": 10,
+      "recall": 0.9954999999999999,
+      "reps": 200,
+      "queries_scored": 200,
+      "wall_ms_batch": 2.987887244671583,
+      "kernel_ms_batch": null,
+      "wall_ms_per_query": 2.987887244671583,
+      "kernel_ms_per_query": null,
+      "qps": 334.6846510969714
+    },
+    {
+      "baseline": "cpu_hnsw",
+      "batch": 128,
+      "knob": "ef",
+      "knob_value": 50,
+      "k": 10,
+      "recall": 0.931328125,
+      "reps": 20,
+      "queries_scored": 2560,
+      "wall_ms_batch": 114.63068006560206,
+      "kernel_ms_batch": null,
+      "wall_ms_per_query": 0.8955521880125161,
+      "kernel_ms_per_query": null,
+      "qps": 1116.6295090175404
+    },
+    {
+      "baseline": "cpu_hnsw",
+      "batch": 128,
+      "knob": "ef",
+      "knob_value": 200,
+      "k": 10,
+      "recall": 0.991953125,
+      "reps": 20,
+      "queries_scored": 2560,
+      "wall_ms_batch": 378.4145833924413,
+      "kernel_ms_batch": null,
+      "wall_ms_per_query": 2.9563639327534474,
+      "kernel_ms_per_query": null,
+      "qps": 338.25334862228453
+    },
+    {
+      "baseline": "cpu_hnsw",
+      "batch": 2048,
+      "knob": "ef",
+      "knob_value": 50,
+      "k": 10,
+      "recall": 0.9358200000000001,
+      "reps": 20,
+      "queries_scored": 10000,
+      "wall_ms_batch": 1806.7943076603115,
+      "kernel_ms_batch": null,
+      "wall_ms_per_query": 0.8822237830372615,
+      "kernel_ms_per_query": null,
+      "qps": 1133.4992540750447
+    },
+    {
+      "baseline": "cpu_hnsw",
+      "batch": 2048,
+      "knob": "ef",
+      "knob_value": 200,
+      "k": 10,
+      "recall": 0.993,
+      "reps": 20,
+      "queries_scored": 10000,
+      "wall_ms_batch": 5946.396999526769,
+      "kernel_ms_batch": null,
+      "wall_ms_per_query": 2.90351415992518,
+      "kernel_ms_per_query": null,
+      "qps": 344.410237016295
+    },
+    {
+      "baseline": "gpu_flat_hand",
+      "batch": 1,
+      "knob": null,
+      "knob_value": null,
+      "k": 10,
+      "recall": 0.9995,
+      "reps": 200,
+      "queries_scored": 200,
+      "wall_ms_batch": 3.1985025852918625,
+      "kernel_ms_batch": 2.9808639883995056,
+      "wall_ms_per_query": 3.1985025852918625,
+      "kernel_ms_per_query": 2.9808639883995056,
+      "qps": 312.6463003651911
+    },
+    {
+      "baseline": "gpu_flat_hand",
+      "batch": 128,
+      "knob": null,
+      "knob_value": null,
+      "k": 10,
+      "recall": 0.9992578125000001,
+      "reps": 20,
+      "queries_scored": 2560,
+      "wall_ms_batch": 11.748368851840496,
+      "kernel_ms_batch": 9.286752104759216,
+      "wall_ms_per_query": 0.09178413165500388,
+      "kernel_ms_per_query": 0.07255275081843138,
+      "qps": 10895.129495355226
+    },
+    {
+      "baseline": "gpu_flat_hand",
+      "batch": 2048,
+      "knob": null,
+      "knob_value": null,
+      "k": 10,
+      "recall": 0.99925,
+      "reps": 20,
+      "queries_scored": 10000,
+      "wall_ms_batch": 126.52526935562491,
+      "kernel_ms_batch": 121.40268778800964,
+      "wall_ms_per_query": 0.06177991667755123,
+      "kernel_ms_per_query": 0.059278656146489084,
+      "qps": 16186.489943314651
+    },
+    {
+      "baseline": "gpu_flat_cublas",
+      "batch": 1,
+      "knob": null,
+      "knob_value": null,
+      "k": 10,
+      "recall": 0.9995,
+      "reps": 200,
+      "queries_scored": 200,
+      "wall_ms_batch": 2.0530615001916885,
+      "kernel_ms_batch": 1.8706239610910416,
+      "wall_ms_per_query": 2.0530615001916885,
+      "kernel_ms_per_query": 1.8706239610910416,
+      "qps": 487.07746938249676
+    },
+    {
+      "baseline": "gpu_flat_cublas",
+      "batch": 128,
+      "knob": null,
+      "knob_value": null,
+      "k": 10,
+      "recall": 0.9992578125000001,
+      "reps": 20,
+      "queries_scored": 2560,
+      "wall_ms_batch": 9.340266697108746,
+      "kernel_ms_batch": 5.8000160455703735,
+      "wall_ms_per_query": 0.07297083357116207,
+      "kernel_ms_per_query": 0.04531262535601854,
+      "qps": 13704.105476947683
+    },
+    {
+      "baseline": "gpu_flat_cublas",
+      "batch": 2048,
+      "knob": null,
+      "knob_value": null,
+      "k": 10,
+      "recall": 0.99925,
+      "reps": 20,
+      "queries_scored": 10000,
+      "wall_ms_batch": 63.70879337191582,
+      "kernel_ms_batch": 58.613759994506836,
+      "wall_ms_per_query": 0.03110780926363077,
+      "kernel_ms_per_query": 0.02861999999731779,
+      "qps": 32146.268852468987
+    },
+    {
+      "baseline": "gpu_hnsw",
+      "batch": 1,
+      "knob": "ef",
+      "knob_value": 50,
+      "k": 10,
+      "recall": 0.9384999999999999,
+      "reps": 200,
+      "queries_scored": 200,
+      "wall_ms_batch": 1.1133113875985146,
+      "kernel_ms_batch": 0.867792010307312,
+      "wall_ms_per_query": 1.1133113875985146,
+      "kernel_ms_per_query": 0.867792010307312,
+      "qps": 898.221298317145,
+      "extra": {
+        "descend_ms": 0.19568484276533127
+      }
+    },
+    {
+      "baseline": "gpu_hnsw",
+      "batch": 1,
+      "knob": "ef",
+      "knob_value": 200,
+      "k": 10,
+      "recall": 0.995,
+      "reps": 200,
+      "queries_scored": 200,
+      "wall_ms_batch": 2.906517591327429,
+      "kernel_ms_batch": 2.64739191532135,
+      "wall_ms_per_query": 2.906517591327429,
+      "kernel_ms_per_query": 2.64739191532135,
+      "qps": 344.05434289606086,
+      "extra": {
+        "descend_ms": 0.19962573423981667
+      }
+    },
+    {
+      "baseline": "gpu_hnsw",
+      "batch": 128,
+      "knob": "ef",
+      "knob_value": 50,
+      "k": 10,
+      "recall": 0.9311718750000001,
+      "reps": 20,
+      "queries_scored": 2560,
+      "wall_ms_batch": 3.422398120164871,
+      "kernel_ms_batch": 1.1018239855766296,
+      "wall_ms_per_query": 0.026737485313788056,
+      "kernel_ms_per_query": 0.008607999887317419,
+      "qps": 37400.67505467006,
+      "extra": {
+        "descend_ms": 2.0762705244123936
+      }
+    },
+    {
+      "baseline": "gpu_hnsw",
+      "batch": 128,
+      "knob": "ef",
+      "knob_value": 200,
+      "k": 10,
+      "recall": 0.991796875,
+      "reps": 20,
+      "queries_scored": 2560,
+      "wall_ms_batch": 5.9634302742779255,
+      "kernel_ms_batch": 3.6263359785079956,
+      "wall_ms_per_query": 0.04658929901779629,
+      "kernel_ms_per_query": 0.028330749832093716,
+      "qps": 21464.15638531109,
+      "extra": {
+        "descend_ms": 2.102831844240427
+      }
+    },
+    {
+      "baseline": "gpu_hnsw",
+      "batch": 2048,
+      "knob": "ef",
+      "knob_value": 50,
+      "k": 10,
+      "recall": 0.9356900000000001,
+      "reps": 20,
+      "queries_scored": 10000,
+      "wall_ms_batch": 32.932196743786335,
+      "kernel_ms_batch": 1.776639997959137,
+      "wall_ms_per_query": 0.01608017419130192,
+      "kernel_ms_per_query": 0.0008674999990034848,
+      "qps": 62188.38105254602,
+      "extra": {
+        "descend_ms": 30.51563026383519
+      }
+    },
+    {
+      "baseline": "gpu_hnsw",
+      "batch": 2048,
+      "knob": "ef",
+      "knob_value": 200,
+      "k": 10,
+      "recall": 0.99279,
+      "reps": 20,
+      "queries_scored": 10000,
+      "wall_ms_batch": 36.39930486679077,
+      "kernel_ms_batch": 5.300735950469971,
+      "wall_ms_per_query": 0.01777309807948768,
+      "kernel_ms_per_query": 0.0025882499758154154,
+      "qps": 56264.81075655131,
+      "extra": {
+        "descend_ms": 30.527774710208178
+      }
+    }
+  ]
+}
